@@ -1,19 +1,33 @@
-from fastapi import FastAPI
 from app.db import get_all_documents, search_documents, get_connection
 from app.services import import_documents
 from app.services import summarize_text
+from app.utils import setup_logger
+from app.models import DocumentResponse
+from fastapi import FastAPI, HTTPException
+import logging
+
+setup_logger()
+
 app = FastAPI()
 
 
 @app.get("/")
 def home():
+    logging.info("访问首页接口")
     return {"message": "Knowledge Base API is running"}
 
 
 @app.get("/documents")
 def list_documents():
     docs = get_all_documents()
-    return {"documents": docs}
+    return [
+        DocumentResponse(
+            id=row[0],
+            title=row[1],
+            file_path=row[2],
+            created_at=row[3]
+        ) for row in docs
+    ]
 
 
 @app.get("/search")
@@ -22,7 +36,7 @@ def search(q: str):
     return {"results": docs}
 
 
-@app.get("/documents/{doc_id}")
+@app.get("/documents/{doc_id}", response_model=DocumentResponse)
 def get_document(doc_id: int):
     conn = get_connection()
     cursor = conn.cursor()
@@ -33,9 +47,16 @@ def get_document(doc_id: int):
     row = cursor.fetchone()
     conn.close()
 
-    if row:
-        return {"document": row}
-    return {"error": "document not found"}
+    if not row:
+        raise HTTPException(status_code=404, detail="document not found") 
+
+    return DocumentResponse(
+        id=row[0],
+        title=row[1],
+        content=row[2],
+        file_path=row[3],
+        created_at=row[4]
+    )
 
 @app.post("/documents/{doc_id}/summary")
 def summarize_document(doc_id: int):

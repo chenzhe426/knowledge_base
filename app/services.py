@@ -3,6 +3,7 @@ from app.utils import scan_files, read_text_file
 from app.db import insert_document
 import requests
 import os
+from app.config import OLLAMA_BASE_URL, OLLAMA_MODEL
 
 def import_documents(folder: str):
     files = scan_files(folder)
@@ -13,20 +14,25 @@ def import_documents(folder: str):
         insert_document(title=title, content=content, file_path=file)
 
 def summarize_text(text: str) -> str:
-    api_key = os.getenv("API_KEY")
-    url = "https://example.com/summarize"
+    url = f"{OLLAMA_BASE_URL}/api/chat"
 
     payload = {
-        "text": text
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是一个擅长总结文档的助手，请用中文简洁总结。"
+            },
+            {
+                "role": "user",
+                "content": f"请总结下面内容，控制在 3 到 5 句话：\n\n{text}"
+            }
+        ],
+        "stream": False
     }
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
-    response = requests.post(url, json=payload, headers=headers, timeout=30)
+    response = requests.post(url, json=payload, timeout=60)
     response.raise_for_status()
 
     data = response.json()
-    return data.get("summary", "")
+    return data["message"]["content"]

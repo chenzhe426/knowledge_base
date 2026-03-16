@@ -1,5 +1,6 @@
 from pathlib import Path
-
+import logging
+import os
 
 def read_text_file(file_path: str) -> str:
     path = Path(file_path)
@@ -24,3 +25,15 @@ def format_document(row):
         "file_path": row[3] if len(row) > 3 else None,
         "created_at": row[4] if len(row) > 4 else None,
     }
+
+def setup_logger():
+    os.makedirs("logs", exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+        handlers=[
+            logging.FileHandler("logs/app.log", encoding="utf-8"),
+            logging.StreamHandler()
+        ]
+    )

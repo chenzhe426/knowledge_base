@@ -1,7 +1,11 @@
 import argparse
 from app.db import init_db, get_all_documents, search_documents, get_connection
 from app.services import import_documents
+from app.utils import setup_logger
+import logging
 
+
+setup_logger()
 
 def show_document(doc_id: int):
     conn = get_connection()
@@ -17,6 +21,7 @@ def show_document(doc_id: int):
 
 
 def main():
+    logging.info("程序启动")
     init_db()
 
     parser = argparse.ArgumentParser()

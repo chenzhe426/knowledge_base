@@ -1,7 +1,7 @@
 import sqlite3
+from app.config import DB_NAME
 
 
-DB_NAME = "knowledge.db"
 
 
 def get_connection():
