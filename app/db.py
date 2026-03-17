@@ -1,11 +1,24 @@
-import sqlite3
-from app.config import DB_NAME
-
-
+import pymysql
+from app.config import (
+    MYSQL_HOST,
+    MYSQL_PORT,
+    MYSQL_USER,
+    MYSQL_PASSWORD,
+    MYSQL_DATABASE,
+)
 
 
 def get_connection():
-    return sqlite3.connect(DB_NAME)
+    return pymysql.connect(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DATABASE,
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.Cursor,
+        autocommit=True,
+    )
 
 
 def init_db():
@@ -13,51 +26,87 @@ def init_db():
     cursor = conn.cursor()
 
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS documents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        content TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
+        CREATE TABLE IF NOT EXISTS documents (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            title VARCHAR(255) NOT NULL,
+            content LONGTEXT NOT NULL,
+            file_path VARCHAR(500) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
     """)
 
-    conn.commit()
+    cursor.close()
     conn.close()
+
 
 def insert_document(title: str, content: str, file_path: str):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
-    INSERT INTO documents (title, content, file_path)
-    VALUES (?, ?, ?)
-    """, (title, content, file_path))
+    cursor.execute(
+        """
+        INSERT INTO documents (title, content, file_path)
+        VALUES (%s, %s, %s)
+        """,
+        (title, content, file_path),
+    )
 
-    conn.commit()
+    cursor.close()
     conn.close()
+
+
 def get_all_documents():
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id, title, file_path, created_at FROM documents")
+    cursor.execute("""
+        SELECT id, title, file_path, created_at
+        FROM documents
+        ORDER BY created_at DESC
+    """)
     rows = cursor.fetchall()
 
+    cursor.close()
     conn.close()
     return rows
+
+
+def get_document_by_id(doc_id: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, title, content, file_path, created_at
+        FROM documents
+        WHERE id = %s
+        """,
+        (doc_id,),
+    )
+    row = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+    return row
+
 
 def search_documents(keyword: str):
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
-    SELECT id, title, file_path, created_at
-    FROM documents
-    WHERE title LIKE ? OR content LIKE ?
-    """, (f"%{keyword}%", f"%{keyword}%"))
-
+    like_keyword = f"%{keyword}%"
+    cursor.execute(
+        """
+        SELECT id, title, file_path, created_at
+        FROM documents
+        WHERE title LIKE %s OR content LIKE %s
+        ORDER BY created_at DESC
+        """,
+        (like_keyword, like_keyword),
+    )
     rows = cursor.fetchall()
+
+    cursor.close()
     conn.close()
     return rows
 
-  
