@@ -10,7 +10,7 @@ setup_logger()
 def show_document(doc_id: int):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, content, file_path, created_at FROM documents WHERE id = ?", (doc_id,))
+    cursor.execute("SELECT id, title, content, file_path, created_at FROM documents WHERE id = %s", (doc_id,))
     row = cursor.fetchone()
     conn.close()
 

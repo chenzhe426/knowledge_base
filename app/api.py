@@ -1,13 +1,16 @@
 from fastapi import FastAPI, HTTPException
 import logging
-
-from app.db import get_all_documents, search_documents, get_document_by_id
+from app.db import get_all_documents, search_documents, get_document_by_id, init_db
 from app.services import import_documents, summarize_text
 from app.utils import setup_logger
 from app.models import DocumentResponse
 
 setup_logger()
+
 app = FastAPI()
+@app.on_event("startup")
+def startup_event():
+    init_db()
 
 
 @app.get("/")

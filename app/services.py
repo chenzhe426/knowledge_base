@@ -31,8 +31,12 @@ def summarize_text(text: str) -> str:
         "stream": False
     }
 
-    response = requests.post(url, json=payload, timeout=60)
-    response.raise_for_status()
-
-    data = response.json()
-    return data["message"]["content"]
+    try:
+        response = requests.post(url, json=payload, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+        return data["message"]["content"]
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Ollama 请求失败: {e}")
+    except KeyError:
+        raise RuntimeError("Ollama 返回格式异常")

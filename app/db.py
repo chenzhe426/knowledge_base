@@ -23,90 +23,99 @@ def get_connection():
 
 def init_db():
     conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS documents (
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            title VARCHAR(255) NOT NULL,
-            content LONGTEXT NOT NULL,
-            file_path VARCHAR(500) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                title VARCHAR(255) NOT NULL,
+                content LONGTEXT NOT NULL,
+                file_path VARCHAR(500) UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         )
-    """)
-
-    cursor.close()
-    conn.close()
+        cursor.close()
+    finally:
+        conn.close()
 
 
 def insert_document(title: str, content: str, file_path: str):
     conn = get_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO documents (title, content, file_path)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                title = VALUES(title),
+                content = VALUES(content)
+            """,
+            (title, content, file_path),
+        )
+        cursor.close()
+    finally:
+        conn.close()
 
-    cursor.execute(
-        """
-        INSERT INTO documents (title, content, file_path)
-        VALUES (%s, %s, %s)
-        """,
-        (title, content, file_path),
-    )
 
-    cursor.close()
-    conn.close()
-
-
-def get_all_documents():
+def get_all_documents(limit: int = 10, offset: int = 0):
     conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT id, title, file_path, created_at
-        FROM documents
-        ORDER BY created_at DESC
-    """)
-    rows = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
-    return rows
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, title, file_path, created_at
+            FROM documents
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            (limit, offset),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return rows
+    finally:
+        conn.close()
 
 
 def get_document_by_id(doc_id: int):
     conn = get_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, title, content, file_path, created_at
+            FROM documents
+            WHERE id = %s
+            """,
+            (doc_id,),
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        return row
+    finally:
+        conn.close()
 
-    cursor.execute(
-        """
-        SELECT id, title, content, file_path, created_at
-        FROM documents
-        WHERE id = %s
-        """,
-        (doc_id,),
-    )
-    row = cursor.fetchone()
 
-    cursor.close()
-    conn.close()
-    return row
-
-
-def search_documents(keyword: str):
+def search_documents(keyword: str, limit: int = 10, offset: int = 0):
     conn = get_connection()
-    cursor = conn.cursor()
-
-    like_keyword = f"%{keyword}%"
-    cursor.execute(
-        """
-        SELECT id, title, file_path, created_at
-        FROM documents
-        WHERE title LIKE %s OR content LIKE %s
-        ORDER BY created_at DESC
-        """,
-        (like_keyword, like_keyword),
-    )
-    rows = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
-    return rows
-
+    try:
+        cursor = conn.cursor()
+        like_keyword = f"%{keyword}%"
+        cursor.execute(
+            """
+            SELECT id, title, file_path, created_at
+            FROM documents
+            WHERE title LIKE %s OR content LIKE %s
+            ORDER BY created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            (like_keyword, like_keyword, limit, offset),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        return rows
+    finally:
+        conn.close()
