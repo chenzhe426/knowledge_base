@@ -1,0 +1,171 @@
+FastAPI 是一个用于构建 Web API 的现代 Python 框架，特点是开发速度快、运行性能高、代码简洁，非常适合用来开发后端接口服务。它基于 Python 的类型注解实现自动数据校验、自动生成接口文档，并且对异步编程提供了良好支持。
+
+一、FastAPI 的核心特点
+
+1. 开发效率高
+   FastAPI 利用 Python 类型提示自动完成参数解析、数据校验和文档生成，开发者不需要写大量重复代码，可以更专注于业务逻辑。
+
+2. 性能高
+   FastAPI 基于 Starlette 和 Pydantic，底层支持 ASGI，性能接近 Node.js 和 Go，明显快于传统的 Flask 这类同步框架。
+
+3. 自动生成文档
+   FastAPI 会根据接口定义自动生成 Swagger UI 和 ReDoc 文档。开发者启动项目后，可以直接在浏览器中查看和测试接口。
+
+4. 强类型校验
+   请求参数、请求体、响应体都可以通过类型注解进行约束，输入不合法时，框架会自动返回错误信息。
+
+5. 支持异步
+   FastAPI 原生支持 async 和 await，适合处理高并发场景，例如聊天系统、实时服务、爬虫接口和 AI 服务接口。
+
+二、FastAPI 的基本使用方式
+
+在 FastAPI 中，通常先创建一个应用对象，然后定义路由。路由就是接口地址，不同地址对应不同功能。
+
+例如：
+
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+return {"message": "Hello FastAPI"}
+
+这段代码表示：
+
+1. 导入 FastAPI
+2. 创建应用实例 app
+3. 使用 @app.get("/") 定义一个 GET 请求接口
+4. 当访问根路径时，返回一个 JSON 数据
+
+三、FastAPI 中常见的请求方式
+
+FastAPI 支持常见的 HTTP 方法，包括：
+
+1. GET
+   用于获取数据，例如查询用户信息。
+
+2. POST
+   用于提交数据，例如新增用户。
+
+3. PUT
+   用于整体更新数据。
+
+4. DELETE
+   用于删除数据。
+
+例如：
+
+@app.get("/users")
+def get_users():
+return [{"id": 1, "name": "Alice"}]
+
+@app.post("/users")
+def create_user():
+return {"message": "创建成功"}
+
+四、路径参数与查询参数
+
+1. 路径参数
+   路径参数直接写在 URL 中，常用于标识资源。
+
+例如：
+
+@app.get("/users/{user_id}")
+def get_user(user_id: int):
+return {"user_id": user_id}
+
+这里的 user_id 会从路径中获取，并且自动转换为整数类型。
+
+2. 查询参数
+   查询参数写在 URL 后面，例如 ?name=Tom&page=1
+
+例如：
+
+@app.get("/items")
+def get_items(page: int = 1, size: int = 10):
+return {"page": page, "size": size}
+
+五、请求体与 Pydantic 模型
+
+FastAPI 常用 Pydantic 来定义请求体的数据结构。这样可以自动校验前端传来的 JSON 数据是否符合要求。
+
+例如：
+
+from pydantic import BaseModel
+
+class User(BaseModel):
+name: str
+age: int
+email: str
+
+@app.post("/users")
+def create_user(user: User):
+return {"user": user}
+
+当前端发送 JSON 数据时，FastAPI 会自动检查：
+
+1. name 是否为字符串
+2. age 是否为整数
+3. email 是否存在
+
+如果格式不对，接口会直接返回错误提示。
+
+六、自动文档功能
+
+FastAPI 最大的优点之一就是自动生成接口文档。启动服务后，可以访问：
+
+1. /docs
+   这是 Swagger UI 页面，可以直接测试接口。
+
+2. /redoc
+   这是另一种风格的接口文档展示页面。
+
+这对前后端联调非常方便，也方便团队协作。
+
+七、异步支持
+
+FastAPI 支持同步函数和异步函数两种写法。
+
+同步写法：
+
+@app.get("/sync")
+def sync_api():
+return {"message": "同步接口"}
+
+异步写法：
+
+@app.get("/async")
+async def async_api():
+return {"message": "异步接口"}
+
+当接口需要处理数据库异步操作、网络请求、文件读取等任务时，异步写法更适合高并发场景。
+
+八、FastAPI 的应用场景
+
+FastAPI 非常适合以下场景：
+
+1. 开发前后端分离项目的后端接口
+2. 开发微服务
+3. 开发 AI 应用接口，例如大模型调用接口、RAG 检索问答接口
+4. 开发数据服务接口
+5. 开发需要高并发处理的系统
+
+九、FastAPI 与 Flask 的对比
+
+1. Flask 更轻量、更灵活，但很多功能需要自己扩展
+2. FastAPI 内置参数校验、文档生成、类型支持，更适合现代 API 开发
+3. Flask 更适合小型项目和教学入门
+4. FastAPI 更适合中大型接口项目、工程化开发和 AI 后端服务
+
+十、总结
+
+FastAPI 是一个现代化、高性能、易开发的 Python Web 框架。它最大的优势在于：
+
+1. 写起来简单
+2. 跑起来快
+3. 自动校验数据
+4. 自动生成文档
+5. 支持异步高并发
+
+对于学习 Python 后端开发、接口开发、AI 应用开发的人来说，FastAPI 是非常值得掌握的工具。尤其是在当前大模型应用、检索增强生成系统和微服务架构中，FastAPI 已经成为非常常见的后端框架之一。
