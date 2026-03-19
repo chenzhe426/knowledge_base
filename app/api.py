@@ -4,11 +4,14 @@ from fastapi import FastAPI, HTTPException
 
 from app.db import (
     get_all_documents,
-    search_documents,
     get_document_by_id,
     init_db,
+    search_documents,
 )
 from app.models import (
+    AskRequest,
+    AskResponse,
+    ChunkResponse,
     DocumentResponse,
     ImportRequest,
     ImportResponse,
@@ -16,17 +19,17 @@ from app.models import (
     IndexResponse,
     RetrieveRequest,
     RetrieveResponse,
-    AskRequest,
-    AskResponse,
-    ChunkResponse,
+    SingleFileImportRequest,
+    SingleFileImportResponse,
 )
 from app.services import (
-    import_documents,
-    summarize_text,
-    index_document,
-    retrieve_chunks,
     answer_question,
     get_document_chunks,
+    import_documents,
+    import_single_document,
+    index_document,
+    retrieve_chunks,
+    summarize_text,
 )
 from app.utils import setup_logger
 
@@ -46,15 +49,15 @@ def home():
     return {"message": "Knowledge Base RAG API is running"}
 
 
-@app.get("/documents")
+@app.get("/documents", response_model=list[DocumentResponse])
 def list_documents():
     docs = get_all_documents()
     return [
         DocumentResponse(
             id=row["id"],
             title=row["title"],
-            file_path=row["file_path"],
-            created_at=str(row["created_at"]) if row["created_at"] else None,
+            file_path=row.get("file_path"),
+            created_at=str(row["created_at"]) if row.get("created_at") else None,
         )
         for row in docs
     ]
@@ -68,8 +71,8 @@ def search(q: str):
             DocumentResponse(
                 id=row["id"],
                 title=row["title"],
-                file_path=row["file_path"],
-                created_at=str(row["created_at"]) if row["created_at"] else None,
+                file_path=row.get("file_path"),
+                created_at=str(row["created_at"]) if row.get("created_at") else None,
             )
             for row in docs
         ]
@@ -85,20 +88,37 @@ def get_document(doc_id: int):
     return DocumentResponse(
         id=row["id"],
         title=row["title"],
-        content=row["content"],
-        file_path=row["file_path"],
-        created_at=str(row["created_at"]) if row["created_at"] else None,
+        content=row.get("content"),
+        file_path=row.get("file_path"),
+        created_at=str(row["created_at"]) if row.get("created_at") else None,
     )
 
 
 @app.post("/documents/import", response_model=ImportResponse)
 def import_docs(payload: ImportRequest):
     try:
-        doc_ids = import_documents(payload.folder)
-        return ImportResponse(
-            imported_count=len(doc_ids),
-            document_ids=doc_ids,
+        result = import_documents(payload.folder)
+        return ImportResponse(**result)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/documents/import/file", response_model=SingleFileImportResponse)
+def import_doc_file(payload: SingleFileImportRequest):
+    try:
+        result = import_single_document(
+            file_path=payload.file_path,
+            source_type=payload.source_type,
         )
+        return SingleFileImportResponse(**result)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -129,6 +149,8 @@ def rag_index_document(doc_id: int, payload: IndexRequest):
             overlap=payload.overlap,
         )
         return IndexResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -154,6 +176,8 @@ def rag_retrieve(payload: RetrieveRequest):
             query=payload.query,
             results=[ChunkResponse(**item) for item in results],
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -167,5 +191,7 @@ def rag_ask(payload: AskRequest):
             answer=result["answer"],
             sources=[ChunkResponse(**item) for item in result["sources"]],
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

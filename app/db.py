@@ -1,171 +1,132 @@
 import json
-import pymysql
+from typing import Any
 
-from app.config import (
-    MYSQL_HOST,
-    MYSQL_PORT,
-    MYSQL_USER,
-    MYSQL_PASSWORD,
-    MYSQL_DATABASE,
-)
+import pymysql
+from pymysql.cursors import DictCursor
+
+from app.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER
 
 
 def get_connection():
     return pymysql.connect(
-        host=MYSQL_HOST,
-        port=MYSQL_PORT,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DATABASE,
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        database=DB_NAME,
         charset="utf8mb4",
-        cursorclass=pymysql.cursors.DictCursor,
-        autocommit=True,
+        cursorclass=DictCursor,
+        autocommit=False,
     )
 
 
 def init_db():
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS documents (
-                id INT PRIMARY KEY AUTO_INCREMENT,
-                title VARCHAR(255) NOT NULL,
-                content LONGTEXT NOT NULL,
-                file_path VARCHAR(500) UNIQUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    content LONGTEXT NOT NULL,
+                    file_path VARCHAR(1000) NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
             )
-            """
-        )
 
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS document_chunks (
-                id INT PRIMARY KEY AUTO_INCREMENT,
-                document_id INT NOT NULL,
-                chunk_index INT NOT NULL,
-                chunk_text LONGTEXT NOT NULL,
-                embedding LONGTEXT NOT NULL,
-                char_start INT DEFAULT 0,
-                char_end INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY uniq_document_chunk (document_id, chunk_index),
-                INDEX idx_document_id (document_id),
-                CONSTRAINT fk_document_chunks_document
-                    FOREIGN KEY (document_id) REFERENCES documents(id)
-                    ON DELETE CASCADE
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_chunks (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    document_id INT NOT NULL,
+                    chunk_index INT NOT NULL,
+                    chunk_text LONGTEXT NOT NULL,
+                    embedding LONGTEXT NOT NULL,
+                    char_start INT NOT NULL DEFAULT 0,
+                    char_end INT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_document_chunks_document
+                        FOREIGN KEY (document_id) REFERENCES documents(id)
+                        ON DELETE CASCADE,
+                    UNIQUE KEY uniq_document_chunk (document_id, chunk_index),
+                    INDEX idx_document_id (document_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """
             )
-            """
-        )
 
-        cursor.close()
+        conn.commit()
     finally:
         conn.close()
 
 
-def insert_document(title: str, content: str, file_path: str):
+def insert_document(title: str, content: str, file_path: str | None = None) -> int:
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO documents (title, content, file_path)
-            VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                title = VALUES(title),
-                content = VALUES(content)
-            """,
-            (title, content, file_path),
-        )
-
-        if cursor.lastrowid:
-            doc_id = cursor.lastrowid
-        else:
+        with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT id FROM documents WHERE file_path = %s",
-                (file_path,),
+                """
+                INSERT INTO documents (title, content, file_path)
+                VALUES (%s, %s, %s)
+                """,
+                (title, content, file_path),
             )
-            row = cursor.fetchone()
-            doc_id = row["id"] if row else None
-
-        cursor.close()
+            doc_id = cursor.lastrowid
+        conn.commit()
         return doc_id
     finally:
         conn.close()
 
 
-def get_all_documents(limit: int = 10, offset: int = 0):
+def get_all_documents() -> list[dict[str, Any]]:
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, title, file_path, created_at
-            FROM documents
-            ORDER BY created_at DESC
-            LIMIT %s OFFSET %s
-            """,
-            (limit, offset),
-        )
-        rows = cursor.fetchall()
-        cursor.close()
-        return rows
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, title, file_path, created_at
+                FROM documents
+                ORDER BY id DESC
+                """
+            )
+            return cursor.fetchall()
     finally:
         conn.close()
 
 
-def get_document_by_id(doc_id: int):
+def get_document_by_id(doc_id: int) -> dict[str, Any] | None:
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, title, content, file_path, created_at
-            FROM documents
-            WHERE id = %s
-            """,
-            (doc_id,),
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        return row
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, title, content, file_path, created_at
+                FROM documents
+                WHERE id = %s
+                """,
+                (doc_id,),
+            )
+            return cursor.fetchone()
     finally:
         conn.close()
 
 
-def search_documents(keyword: str, limit: int = 10, offset: int = 0):
+def search_documents(query: str) -> list[dict[str, Any]]:
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-        like_keyword = f"%{keyword}%"
-        cursor.execute(
-            """
-            SELECT id, title, file_path, created_at
-            FROM documents
-            WHERE title LIKE %s OR content LIKE %s
-            ORDER BY created_at DESC
-            LIMIT %s OFFSET %s
-            """,
-            (like_keyword, like_keyword, limit, offset),
-        )
-        rows = cursor.fetchall()
-        cursor.close()
-        return rows
-    finally:
-        conn.close()
-
-
-def clear_chunks_by_document_id(document_id: int):
-    conn = get_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM document_chunks WHERE document_id = %s",
-            (document_id,),
-        )
-        cursor.close()
+        keyword = f"%{query}%"
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, title, file_path, created_at
+                FROM documents
+                WHERE title LIKE %s OR content LIKE %s
+                ORDER BY id DESC
+                """,
+                (keyword, keyword),
+            )
+            return cursor.fetchall()
     finally:
         conn.close()
 
@@ -177,90 +138,123 @@ def insert_chunk(
     embedding: list[float],
     char_start: int = 0,
     char_end: int = 0,
-):
+) -> int:
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO document_chunks
-                (document_id, chunk_index, chunk_text, embedding, char_start, char_end)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                chunk_text = VALUES(chunk_text),
-                embedding = VALUES(embedding),
-                char_start = VALUES(char_start),
-                char_end = VALUES(char_end)
-            """,
-            (
-                document_id,
-                chunk_index,
-                chunk_text,
-                json.dumps(embedding, ensure_ascii=False),
-                char_start,
-                char_end,
-            ),
-        )
-        chunk_id = cursor.lastrowid
-        cursor.close()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO document_chunks (
+                    document_id,
+                    chunk_index,
+                    chunk_text,
+                    embedding,
+                    char_start,
+                    char_end
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    chunk_text = VALUES(chunk_text),
+                    embedding = VALUES(embedding),
+                    char_start = VALUES(char_start),
+                    char_end = VALUES(char_end)
+                """,
+                (
+                    document_id,
+                    chunk_index,
+                    chunk_text,
+                    json.dumps(embedding, ensure_ascii=False),
+                    char_start,
+                    char_end,
+                ),
+            )
+            chunk_id = cursor.lastrowid
+        conn.commit()
         return chunk_id
     finally:
         conn.close()
 
 
-def get_chunks_by_document_id(document_id: int):
+def clear_chunks_by_document_id(document_id: int) -> None:
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                dc.id,
-                dc.document_id,
-                d.title,
-                dc.chunk_index,
-                dc.chunk_text,
-                dc.embedding,
-                dc.char_start,
-                dc.char_end,
-                dc.created_at
-            FROM document_chunks dc
-            JOIN documents d ON dc.document_id = d.id
-            WHERE dc.document_id = %s
-            ORDER BY dc.chunk_index ASC
-            """,
-            (document_id,),
-        )
-        rows = cursor.fetchall()
-        cursor.close()
-        return rows
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM document_chunks
+                WHERE document_id = %s
+                """,
+                (document_id,),
+            )
+        conn.commit()
     finally:
         conn.close()
 
 
-def get_all_chunks():
+def get_chunks_by_document_id(document_id: int) -> list[dict[str, Any]]:
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                dc.id,
-                dc.document_id,
-                d.title,
-                dc.chunk_index,
-                dc.chunk_text,
-                dc.embedding,
-                dc.char_start,
-                dc.char_end,
-                dc.created_at
-            FROM document_chunks dc
-            JOIN documents d ON dc.document_id = d.id
-            ORDER BY dc.document_id ASC, dc.chunk_index ASC
-            """
-        )
-        rows = cursor.fetchall()
-        cursor.close()
-        return rows
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    c.id,
+                    c.document_id,
+                    d.title,
+                    c.chunk_index,
+                    c.chunk_text,
+                    c.char_start,
+                    c.char_end,
+                    c.created_at
+                FROM document_chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE c.document_id = %s
+                ORDER BY c.chunk_index ASC
+                """,
+                (document_id,),
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def get_all_chunks() -> list[dict[str, Any]]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    c.id,
+                    c.document_id,
+                    d.title,
+                    c.chunk_index,
+                    c.chunk_text,
+                    c.embedding,
+                    c.char_start,
+                    c.char_end,
+                    c.created_at
+                FROM document_chunks c
+                JOIN documents d ON c.document_id = d.id
+                ORDER BY c.id ASC
+                """
+            )
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def delete_document(doc_id: int) -> None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM documents
+                WHERE id = %s
+                """,
+                (doc_id,),
+            )
+        conn.commit()
     finally:
         conn.close()
