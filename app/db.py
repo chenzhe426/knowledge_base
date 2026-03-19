@@ -157,8 +157,8 @@ def init_db():
 def insert_document(
     title: str,
     content: str,
-    file_path: str | None = None,
     raw_text: str | None = None,
+    file_path: str | None = None,
     file_type: str | None = None,
     source_type: str | None = None,
     metadata: dict[str, Any] | None = None,

@@ -1,11 +1,13 @@
-from .text_parser import parse_text_document
-from .docx_parser import parse_docx_document
-from .pdf_parser import parse_pdf_document
+from app.ingestion.schemas import ParsedDocument
+from app.ingestion.parsers.base import BaseParser
+from app.ingestion.parsers.docx_parser import DocxParser
+from app.ingestion.parsers.pdf_parser import PdfParser
+from app.ingestion.parsers.text_parser import TextParser
 
 __all__ = [
-    "parse_text_document",
-    "parse_docx_document",
-    "parse_pdf_document",
+    "ParsedDocument",
+    "BaseParser",
+    "DocxParser",
+    "PdfParser",
+    "TextParser",
 ]
-
-

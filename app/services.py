@@ -41,48 +41,96 @@ def _safe_json_loads(value: Any, default: Any):
     return default
 
 
-def block_to_dict(block: Any) -> dict[str, Any]:
+def _normalize_section_path(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return []
+        if " > " in s:
+            return [part.strip() for part in s.split(" > ") if part.strip()]
+        return [s]
+    return []
+
+
+def block_to_dict(block: Any, fallback_index: int = 0) -> dict[str, Any]:
+    """
+    把 ingestion 输出的 block 统一成 services 内部格式。
+    新版 ingestion block 推荐字段：
+    - type
+    - text
+    - section_path
+    - heading_level
+    - page
+    - block_index
+    """
     if hasattr(block, "model_dump"):
-        return block.model_dump()
-    if isinstance(block, dict):
-        return block
+        block = block.model_dump()
+
+    if not isinstance(block, dict):
+        block = {
+            "type": getattr(block, "type", "paragraph"),
+            "text": getattr(block, "text", ""),
+            "section_path": getattr(block, "section_path", None),
+            "heading_level": getattr(block, "heading_level", None),
+            "page": getattr(block, "page", None),
+            "block_index": getattr(block, "block_index", fallback_index),
+            "metadata": getattr(block, "metadata", {}) or {},
+        }
+
+    section_path = _normalize_section_path(block.get("section_path"))
+    block_type = (block.get("type") or "paragraph").strip().lower()
+    text = (block.get("text") or "").strip()
+
     return {
-        "block_id": getattr(block, "block_id", ""),
-        "block_type": getattr(block, "block_type", "paragraph"),
-        "text": getattr(block, "text", ""),
-        "order": getattr(block, "order", 0),
-        "page_num": getattr(block, "page_num", None),
-        "level": getattr(block, "level", None),
-        "metadata": getattr(block, "metadata", {}) or {},
+        "block_id": block.get("block_id") or f"block_{fallback_index}",
+        "block_type": block_type,
+        "text": text,
+        "order": block.get("block_index", fallback_index),
+        "page_num": block.get("page"),
+        "level": block.get("heading_level"),
+        "section_path": section_path,
+        "metadata": block.get("metadata") or {},
     }
 
 
 def parsed_document_to_db_payload(doc: ParsedDocument) -> dict[str, Any]:
     """
     把 ParsedDocument 转成 documents 表可直接存储的 payload。
+    新版 ParsedDocument:
+    - title
+    - content
+    - blocks
+    - source_path
+    - file_type
+    - metadata
     """
     title = (doc.title or "").strip() or Path(doc.source_path or "").stem or "未命名文档"
-    clean_text = (doc.clean_text or "").strip()
-    raw_text = (doc.raw_text or "").strip()
-    content = clean_text or raw_text
+    content = (doc.content or "").strip()
 
-    blocks = [block_to_dict(block) for block in (doc.blocks or [])]
+    blocks = [
+        block_to_dict(block, fallback_index=idx)
+        for idx, block in enumerate(doc.blocks or [])
+    ]
 
     return {
         "title": title,
         "content": content,
-        "raw_text": raw_text or content,
+        "raw_text": content,
         "file_path": doc.source_path,
         "file_type": doc.file_type,
-        "source_type": doc.source_type,
+        "source_type": "upload",
         "metadata": doc.metadata or {},
         "block_count": len(blocks),
         "blocks": blocks,
     }
 
 
-def import_single_document(file_path: str, source_type: str = "upload") -> dict[str, Any]:
-    parsed_doc = parse_document(file_path=file_path, source_type=source_type)
+def import_single_document(file_path: str) -> dict[str, Any]:
+    parsed_doc = parse_document(file_path=file_path)
     payload = parsed_document_to_db_payload(parsed_doc)
 
     if not payload["content"]:
@@ -113,7 +161,7 @@ def import_single_document(file_path: str, source_type: str = "upload") -> dict[
 
 
 def import_documents(folder: str) -> dict[str, Any]:
-    parsed_documents = parse_documents_from_folder(folder_path=folder, recursive=True)
+    parsed_documents = parse_documents_from_folder(folder_path=folder)
 
     imported: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
@@ -151,6 +199,7 @@ def import_documents(folder: str) -> dict[str, Any]:
                     "source_type": payload["source_type"],
                     "char_count": len(payload["content"]),
                     "block_count": payload["block_count"],
+                    "metadata": payload["metadata"],
                 }
             )
         except Exception as e:
@@ -204,8 +253,8 @@ def split_text(
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[dict[str, Any]]:
     """
-    保留一个兼容版字符切分函数，避免其他地方仍有引用。
-    但正式索引流程不再优先使用它。
+    保留兼容版字符切分函数。
+    正式索引流程优先走 block-aware chunking。
     """
     if not text or not text.strip():
         return []
@@ -245,12 +294,6 @@ def split_text(
 
 
 def estimate_token_count(text: str) -> int:
-    """
-    粗略 token 估算：
-    - 中文按字符近似
-    - 英文按词近似
-    目标不是精确计数，而是让 chunk 大小更稳定。
-    """
     if not text:
         return 0
 
@@ -263,13 +306,15 @@ def estimate_token_count(text: str) -> int:
 def normalize_block(block: dict[str, Any], fallback_order: int = 0) -> dict[str, Any]:
     text = (block.get("text") or "").strip()
     metadata = block.get("metadata") or {}
+
     return {
         "block_id": block.get("block_id") or f"block_{fallback_order}",
-        "block_type": block.get("block_type") or "paragraph",
+        "block_type": (block.get("block_type") or block.get("type") or "paragraph").strip().lower(),
         "text": text,
-        "order": block.get("order", fallback_order),
-        "page_num": block.get("page_num"),
-        "level": block.get("level"),
+        "order": block.get("order", block.get("block_index", fallback_order)),
+        "page_num": block.get("page_num", block.get("page")),
+        "level": block.get("level", block.get("heading_level")),
+        "section_path": _normalize_section_path(block.get("section_path")),
         "metadata": metadata,
     }
 
@@ -290,6 +335,7 @@ def build_blocks_from_content(content: str) -> list[dict[str, Any]]:
                 "order": idx,
                 "page_num": None,
                 "level": None,
+                "section_path": [],
                 "metadata": {},
             }
         )
@@ -297,11 +343,6 @@ def build_blocks_from_content(content: str) -> list[dict[str, Any]]:
 
 
 def group_table_rows(table_text: str, max_chars: int) -> list[str]:
-    """
-    表格文本拆分：
-    - 短表直接一块
-    - 长表按行拆
-    """
     text = table_text.strip()
     if not text:
         return []
@@ -408,10 +449,10 @@ def split_blocks_into_chunks(
     """
     基于 blocks 的 chunk 切分。
     核心原则：
-    1. heading/title 只更新 section_path，不直接粗暴参与字符滑窗
-    2. paragraph/list 可合并
+    1. heading 不单独落最终 chunk，主要用于更新 section_path
+    2. paragraph / list_item 可聚合
     3. table 单独策略
-    4. 用 heading path 做语义上下文，而不是机械字符 overlap
+    4. caption 尽量并入邻近正文
     """
     if not blocks:
         return []
@@ -444,13 +485,18 @@ def split_blocks_into_chunks(
 
     def apply_heading(block: dict[str, Any]):
         nonlocal current_section_path
+
+        if block.get("section_path"):
+            current_section_path = list(block["section_path"])
+            return
+
         heading_text = block["text"].strip()
         if not heading_text:
             return
 
         level = block.get("level")
         if level is None or level <= 0:
-            level = 1 if block["block_type"] == "title" else 2
+            level = 1
 
         while len(current_section_path) >= level:
             current_section_path.pop()
@@ -463,13 +509,11 @@ def split_blocks_into_chunks(
         if not text:
             continue
 
-        # 标题类：先 flush，再更新 section_path
-        if block_type in {"title", "heading"}:
+        if block_type in {"heading", "title"}:
             flush_current("paragraph")
             apply_heading(block)
             continue
 
-        # 表格：尽量独立 chunk
         if block_type == "table":
             flush_current("paragraph")
             table_parts = group_table_rows(text, max_chars=max(200, max_tokens))
@@ -493,8 +537,7 @@ def split_blocks_into_chunks(
                     chunks.append(chunk)
             continue
 
-        # caption：优先并入正文，不单独扩散太多噪声
-        if block_type == "caption":
+        if block_type in {"image_caption", "caption"}:
             block_token = estimate_token_count(text)
             if current_blocks and current_tokens + block_token <= max_tokens:
                 current_blocks.append(block)
@@ -510,17 +553,16 @@ def split_blocks_into_chunks(
                     chunks.append(chunk)
             continue
 
-        # list / paragraph 统一处理
+        if block_type not in {"paragraph", "list_item", "quote", "code"}:
+            block_type = "paragraph"
+
         block_token = estimate_token_count(text)
 
-        # 超大 block，先把已有的刷掉，再单独切
         if block_token > max_tokens:
             flush_current("paragraph")
 
-            # 对超长 block 做段内切分
             sentences = [s.strip() for s in text.split("\n") if s.strip()]
             if len(sentences) <= 1:
-                # 实在拆不开就按字符硬切，但保留 heading path
                 hard_parts = [
                     text[i:i + max_tokens].strip()
                     for i in range(0, len(text), max_tokens)
@@ -541,30 +583,28 @@ def split_blocks_into_chunks(
                     hard_parts.append(current_part)
 
             for part in hard_parts:
-                single_block = {
-                    **block,
-                    "text": part,
-                }
+                single_block = {**block, "text": part}
                 chunk = finalize_chunk(
                     doc_title=doc_title,
                     current_blocks=[single_block],
                     section_path=current_section_path,
-                    chunk_type="list" if block_type == "list" else "paragraph",
+                    chunk_type="list" if block["block_type"] == "list_item" else "paragraph",
                 )
                 if chunk:
                     chunks.append(chunk)
             continue
 
-        # 正常累积
         if current_blocks and current_tokens + block_token > max_tokens:
-            flush_current("list" if current_blocks[0]["block_type"] == "list" else "paragraph")
+            first_type = current_blocks[0]["block_type"]
+            flush_current("list" if first_type == "list_item" else "paragraph")
 
         current_blocks.append(block)
         current_tokens += block_token
 
-    flush_current("list" if current_blocks and current_blocks[0]["block_type"] == "list" else "paragraph")
+    if current_blocks:
+        first_type = current_blocks[0]["block_type"]
+        flush_current("list" if first_type == "list_item" else "paragraph")
 
-    # 兼容 overlap 参数：这里不再做字符拷贝式 overlap，只记录策略说明
     for chunk in chunks:
         chunk["metadata"]["overlap_mode"] = "semantic_heading_context"
         chunk["metadata"]["configured_overlap"] = overlap

@@ -67,8 +67,8 @@ def cmd_import(folder: str):
             print(f"- {item.get('file_path')} | 原因: {item['reason']}")
 
 
-def cmd_import_file(file_path: str, source_type: str):
-    result = import_single_document(file_path=file_path, source_type=source_type)
+def cmd_import_file(file_path: str):
+    result = import_single_document(file_path=file_path)
 
     print("导入成功：")
     print(f"ID: {result['id']}")
@@ -251,19 +251,13 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Knowledge Base CLI")
     subparsers = parser.add_subparsers(dest="command")
 
-    parser_init_db = subparsers.add_parser("init-db", help="初始化或升级数据库表结构")
+    subparsers.add_parser("init-db", help="初始化或升级数据库表结构")
 
     parser_import = subparsers.add_parser("import", help="从文件夹批量导入文档")
     parser_import.add_argument("folder", type=str, help="文档文件夹路径")
 
     parser_import_file = subparsers.add_parser("import-file", help="导入单个文档")
     parser_import_file.add_argument("file_path", type=str, help="文件路径")
-    parser_import_file.add_argument(
-        "--source-type",
-        type=str,
-        default="upload",
-        help="来源类型，例如 upload/folder/url",
-    )
 
     subparsers.add_parser("list", help="列出所有文档")
 
@@ -356,7 +350,7 @@ def main():
     if args.command == "import":
         cmd_import(args.folder)
     elif args.command == "import-file":
-        cmd_import_file(args.file_path, args.source_type)
+        cmd_import_file(args.file_path)
     elif args.command == "list":
         cmd_list()
     elif args.command == "search":

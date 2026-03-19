@@ -1,211 +1,206 @@
+from __future__ import annotations
+
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any
 
-import pdfplumber
-
-from app.ingestion.normalizers import (
-    clean_common_noise_lines,
-    merge_broken_lines,
-    normalize_whitespace,
-    remove_repeated_headers_footers,
-)
-from app.ingestion.parsers.base import is_heading_like, make_block
-from app.ingestion.schemas import DocumentBlock, ParsedDocument
+from app.ingestion.normalizers import clean_blocks, normalize_text
+from app.ingestion.parsers.base import BaseParser
+from app.ingestion.schemas import ParsedDocument
 
 
-def extract_pdf_pages(file_path: str) -> List[Dict]:
-    """
-    提取 PDF 每一页的原始文本与行信息。
+def _section_path_push(section_stack: list[str], heading_text: str, level: int) -> str:
+    while len(section_stack) >= level:
+        section_stack.pop()
+    section_stack.append(heading_text)
+    return " > ".join(section_stack)
 
-    返回示例：
-    [
-        {
-            "page_num": 1,
-            "text": "...",
-            "lines": ["...", "..."]
-        },
-        ...
-    ]
-    """
-    pages: List[Dict] = []
 
-    with pdfplumber.open(file_path) as pdf:
-        for idx, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text() or ""
-            text = text.replace("\r\n", "\n").replace("\r", "\n")
-            lines = text.split("\n") if text else []
+def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
+    lines = normalize_text(markdown_text).split("\n")
+    blocks: list[dict[str, Any]] = []
+    section_stack: list[str] = []
+    para_buf: list[str] = []
 
-            pages.append(
+    def flush_paragraph():
+        nonlocal para_buf
+        if para_buf:
+            text = "\n".join(para_buf).strip()
+            if text:
+                blocks.append(
+                    {
+                        "type": "paragraph",
+                        "text": text,
+                        "section_path": " > ".join(section_stack) if section_stack else None,
+                    }
+                )
+        para_buf = []
+
+    for line in lines:
+        s = line.strip()
+        if not s:
+            flush_paragraph()
+            continue
+
+        if s.startswith("#"):
+            flush_paragraph()
+            level = len(s) - len(s.lstrip("#"))
+            heading_text = s[level:].strip()
+            section_path = _section_path_push(section_stack, heading_text, level)
+            blocks.append(
                 {
-                    "page_num": idx,
-                    "text": text,
-                    "lines": lines,
+                    "type": "heading",
+                    "text": heading_text,
+                    "heading_level": level,
+                    "section_path": section_path,
                 }
             )
+            continue
 
-    return pages
+        if re.match(r"^\s*([-*•]|\d+[.)、])\s+.+$", s):
+            flush_paragraph()
+            blocks.append(
+                {
+                    "type": "list_item",
+                    "text": s,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                }
+            )
+            continue
+
+        if s.startswith("|") and s.endswith("|"):
+            flush_paragraph()
+            blocks.append(
+                {
+                    "type": "table",
+                    "text": s,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                }
+            )
+            continue
+
+        para_buf.append(s)
+
+    flush_paragraph()
+    return clean_blocks(blocks)
 
 
-def detect_pdf_heading(line: str) -> Tuple[bool, Optional[int]]:
-    """
-    PDF 标题识别。
-    第一版主要靠启发式：
-    - 常见编号模式
-    - 行较短
-    - 非句末标点结束
-    """
-    normalized = normalize_whitespace(line)
-    if not normalized:
-        return False, None
+def _parse_with_docling(path: Path) -> list[dict[str, Any]]:
+    from docling.document_converter import DocumentConverter
 
-    return is_heading_like(normalized)
+    converter = DocumentConverter()
+    result = converter.convert(str(path))
+    markdown_text = result.document.export_to_markdown()
+    return _docling_markdown_to_blocks(markdown_text)
 
 
-def lines_to_blocks(page_lines: List[str], page_num: int, start_order: int) -> List[DocumentBlock]:
-    """
-    将单页文本行转换为结构化 blocks。
-    """
-    blocks: List[DocumentBlock] = []
-    order = start_order
+def _parse_with_unstructured(path: Path) -> list[dict[str, Any]]:
+    from unstructured.partition.auto import partition
 
-    merged_lines = merge_broken_lines(page_lines)
+    elements = partition(filename=str(path))
+    blocks: list[dict[str, Any]] = []
+    section_stack: list[str] = []
 
-    for line in merged_lines:
-        text = normalize_whitespace(line)
+    for idx, el in enumerate(elements):
+        text = getattr(el, "text", "") or ""
+        text = text.strip()
         if not text:
             continue
 
-        is_heading, level = detect_pdf_heading(text)
-        block_type = "heading" if is_heading else "paragraph"
+        el_type = el.__class__.__name__
+        meta = getattr(el, "metadata", None)
 
-        blocks.append(
-            make_block(
-                block_type=block_type,
-                text=text,
-                order=order,
-                page_num=page_num,
-                level=level if is_heading else None,
-                prefix="pdf",
-                metadata={"page_num": page_num},
+        if el_type == "Title":
+            heading_text = text
+            level = 1
+            while len(section_stack) >= level:
+                section_stack.pop()
+            section_stack.append(heading_text)
+
+            blocks.append(
+                {
+                    "type": "heading",
+                    "text": heading_text,
+                    "heading_level": level,
+                    "section_path": " > ".join(section_stack),
+                    "page": getattr(meta, "page_number", None) if meta else None,
+                    "block_index": idx,
+                }
             )
-        )
-        order += 1
+        else:
+            block_type = {
+                "NarrativeText": "paragraph",
+                "ListItem": "list_item",
+                "Table": "table",
+                "Image": "image_caption",
+            }.get(el_type, "paragraph")
 
-    return blocks
+            blocks.append(
+                {
+                    "type": block_type,
+                    "text": text,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                    "page": getattr(meta, "page_number", None) if meta else None,
+                    "block_index": idx,
+                }
+            )
 
-
-def clean_pdf_pages(pages: List[Dict]) -> List[Dict]:
-    """
-    清洗 PDF 页内容：
-    - 去空白
-    - 去页码
-    - 去纯符号行
-    - 去重复页眉页脚
-    """
-    if not pages:
-        return []
-
-    all_page_lines: List[List[str]] = []
-    for page in pages:
-        lines = page.get("lines", [])
-        cleaned_lines = clean_common_noise_lines(lines)
-        all_page_lines.append(cleaned_lines)
-
-    cleaned_all_pages = remove_repeated_headers_footers(all_page_lines)
-
-    cleaned_pages: List[Dict] = []
-    for page, cleaned_lines in zip(pages, cleaned_all_pages):
-        cleaned_pages.append(
-            {
-                "page_num": page["page_num"],
-                "text": "\n".join(cleaned_lines),
-                "lines": cleaned_lines,
-            }
-        )
-
-    return cleaned_pages
+    return clean_blocks(blocks)
 
 
-def extract_pdf_raw_text(pages: List[Dict]) -> str:
-    """
-    将 PDF 原始页文本拼接成 raw_text。
-    """
-    raw_parts: List[str] = []
+def _parse_with_pypdf(path: Path) -> list[dict[str, Any]]:
+    from pypdf import PdfReader
 
-    for page in pages:
-        text = normalize_whitespace(page.get("text", ""))
-        if text:
-            raw_parts.append(text)
+    reader = PdfReader(str(path))
+    blocks: list[dict[str, Any]] = []
 
-    return "\n\n".join(raw_parts)
-
-
-def _promote_first_heading_to_title(blocks: List[DocumentBlock]) -> List[DocumentBlock]:
-    """
-    将第一条 heading 提升为 title，便于后续文档标题提取。
-    """
-    for block in blocks:
-        if block.block_type == "heading" and normalize_whitespace(block.text):
-            block.block_type = "title"
-            if block.level is None:
-                block.level = 1
-            return blocks
-    return blocks
-
-
-def parse_pdf_document(file_path: str, source_type: str = "folder") -> ParsedDocument:
-    """
-    解析 PDF 文档，输出统一的 ParsedDocument。
-
-    第一版能力：
-    - 提取 PDF 文本
-    - 按页保留 page_num
-    - 清理基础噪音（页码 / 页眉页脚 / 空白）
-    - 做轻量标题识别
-    - 保留段落边界的初步结构
-    """
-    path = Path(file_path)
-
-    if not path.exists():
-        raise FileNotFoundError(f"文件不存在: {file_path}")
-
-    if not path.is_file():
-        raise ValueError(f"不是有效文件: {file_path}")
-
-    raw_pages = extract_pdf_pages(str(path))
-    cleaned_pages = clean_pdf_pages(raw_pages)
-
-    blocks: List[DocumentBlock] = []
-    order = 1
-
-    for page in cleaned_pages:
-        page_num = page["page_num"]
-        page_lines = page.get("lines", [])
-
-        if not page_lines:
+    for page_idx, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ""
+        text = normalize_text(text)
+        if not text:
             continue
 
-        page_blocks = lines_to_blocks(page_lines, page_num=page_num, start_order=order)
-        blocks.extend(page_blocks)
-        order += len(page_blocks)
+        paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        for para in paras:
+            blocks.append(
+                {
+                    "type": "paragraph",
+                    "text": para,
+                    "page": page_idx,
+                    "section_path": None,
+                }
+            )
 
-    blocks = _promote_first_heading_to_title(blocks)
+    return clean_blocks(blocks)
 
-    raw_text = extract_pdf_raw_text(raw_pages)
-    clean_text = "\n\n".join(block.text for block in blocks if block.text)
 
-    return ParsedDocument(
-        title=path.stem,
-        source_type=source_type,
-        file_type="pdf",
-        source_path=str(path.resolve()),
-        raw_text=raw_text,
-        clean_text=clean_text,
-        blocks=blocks,
-        metadata={
-            "parser": "pdfplumber",
-            "page_count": len(raw_pages),
-            "block_count": len(blocks),
-        },
-    )
+class PdfParser(BaseParser):
+    file_type = "pdf"
 
+    def parse(self, file_path: str | Path) -> ParsedDocument:
+        path = Path(file_path)
+        errors: list[str] = []
+
+        for parser_name, parser_func in [
+            ("docling", _parse_with_docling),
+            ("unstructured", _parse_with_unstructured),
+            ("pypdf", _parse_with_pypdf),
+        ]:
+            try:
+                blocks = parser_func(path)
+                if blocks:
+                    content = "\n\n".join(
+                        b["text"] for b in blocks if b.get("type") != "heading"
+                    ).strip()
+                    return ParsedDocument(
+                        title=path.stem,
+                        content=content,
+                        blocks=blocks,
+                        source_path=str(path),
+                        file_type=self.file_type,
+                        metadata={"parser_used": parser_name, "errors": errors},
+                    )
+            except Exception as e:
+                errors.append(f"{parser_name}: {e}")
+
+        raise RuntimeError(f"failed to parse pdf: {path} | errors={errors}")

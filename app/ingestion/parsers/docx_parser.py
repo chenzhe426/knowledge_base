@@ -1,138 +1,238 @@
+from __future__ import annotations
+
+import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any
 
-from docx import Document
-
-from app.ingestion.normalizers import normalize_whitespace
-from app.ingestion.parsers.base import is_heading_like, make_block
-from app.ingestion.schemas import DocumentBlock, ParsedDocument
+from app.ingestion.normalizers import clean_blocks, normalize_text
+from app.ingestion.parsers.base import BaseParser
+from app.ingestion.schemas import ParsedDocument
 
 
-def detect_docx_block_type(style_name: str, text: str) -> Tuple[str, Optional[int]]:
-    """
-    根据 Word 段落样式判断 block 类型与标题层级。
-
-    规则优先级：
-    1. Title / Subtitle
-    2. Heading 1~6
-    3. 再用启发式规则兜底
-    """
-    normalized_style = (style_name or "").strip().lower()
-    normalized_text = normalize_whitespace(text)
-
-    if not normalized_text:
-        return "paragraph", None
-
-    if "title" == normalized_style or normalized_style.endswith(" title"):
-        return "title", 1
-
-    if "subtitle" in normalized_style:
-        return "heading", 2
-
-    if "heading" in normalized_style:
-        # 常见样式名：Heading 1 / heading 2 / 标题 1（后续可继续扩展）
-        for level in range(1, 7):
-            if f"heading {level}" in normalized_style or f"标题 {level}" in normalized_style:
-                return ("title", 1) if level == 1 else ("heading", level)
-
-        # 样式名里有 heading 但没识别出具体层级
-        return "heading", 2
-
-    # 样式无法识别时，走轻量启发式
-    heading_like, level = is_heading_like(normalized_text)
-    if heading_like:
-        if level == 1:
-            return "title", 1
-        return "heading", level or 2
-
-    return "paragraph", None
+def _section_path_push(section_stack: list[str], heading_text: str, level: int) -> str:
+    while len(section_stack) >= level:
+        section_stack.pop()
+    section_stack.append(heading_text)
+    return " > ".join(section_stack)
 
 
-def extract_docx_raw_text(doc: Document) -> str:
-    """
-    提取 docx 中所有非空段落，拼成原始文本。
-    """
-    lines: List[str] = []
-    for para in doc.paragraphs:
-        text = normalize_whitespace(para.text)
-        if text:
-            lines.append(text)
-    return "\n\n".join(lines)
+def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
+    lines = normalize_text(markdown_text).split("\n")
+    blocks: list[dict[str, Any]] = []
+    section_stack: list[str] = []
+    para_buf: list[str] = []
+
+    def flush_paragraph():
+        nonlocal para_buf
+        if para_buf:
+            text = "\n".join(para_buf).strip()
+            if text:
+                blocks.append(
+                    {
+                        "type": "paragraph",
+                        "text": text,
+                        "section_path": " > ".join(section_stack) if section_stack else None,
+                    }
+                )
+        para_buf = []
+
+    for line in lines:
+        s = line.strip()
+        if not s:
+            flush_paragraph()
+            continue
+
+        if s.startswith("#"):
+            flush_paragraph()
+            level = len(s) - len(s.lstrip("#"))
+            heading_text = s[level:].strip()
+            section_path = _section_path_push(section_stack, heading_text, level)
+            blocks.append(
+                {
+                    "type": "heading",
+                    "text": heading_text,
+                    "heading_level": level,
+                    "section_path": section_path,
+                }
+            )
+            continue
+
+        if re.match(r"^\s*([-*•]|\d+[.)、])\s+.+$", s):
+            flush_paragraph()
+            blocks.append(
+                {
+                    "type": "list_item",
+                    "text": s,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                }
+            )
+            continue
+
+        if s.startswith("|") and s.endswith("|"):
+            flush_paragraph()
+            blocks.append(
+                {
+                    "type": "table",
+                    "text": s,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                }
+            )
+            continue
+
+        para_buf.append(s)
+
+    flush_paragraph()
+    return clean_blocks(blocks)
 
 
-def parse_docx_paragraphs(doc: Document) -> List[DocumentBlock]:
-    """
-    遍历 docx 段落并生成结构化 blocks。
-    """
-    blocks: List[DocumentBlock] = []
-    order = 1
-    title_already_used = False
+def _parse_with_docling(path: Path) -> list[dict[str, Any]]:
+    from docling.document_converter import DocumentConverter
 
-    for para in doc.paragraphs:
-        text = normalize_whitespace(para.text)
+    converter = DocumentConverter()
+    result = converter.convert(str(path))
+    markdown_text = result.document.export_to_markdown()
+    return _docling_markdown_to_blocks(markdown_text)
+
+
+def _parse_with_unstructured(path: Path) -> list[dict[str, Any]]:
+    from unstructured.partition.auto import partition
+
+    elements = partition(filename=str(path))
+    blocks: list[dict[str, Any]] = []
+    section_stack: list[str] = []
+
+    for idx, el in enumerate(elements):
+        text = getattr(el, "text", "") or ""
+        text = text.strip()
         if not text:
             continue
 
-        style_name = para.style.name if para.style is not None else ""
-        block_type, level = detect_docx_block_type(style_name, text)
+        el_type = el.__class__.__name__
+        meta = getattr(el, "metadata", None)
 
-        # 避免多个 block 都被打成 title
-        if block_type == "title":
-            if title_already_used:
-                block_type = "heading"
-                level = level or 1
-            else:
-                title_already_used = True
+        if el_type == "Title":
+            heading_text = text
+            level = 1
+            while len(section_stack) >= level:
+                section_stack.pop()
+            section_stack.append(heading_text)
 
-        blocks.append(
-            make_block(
-                block_type=block_type,
-                text=text,
-                order=order,
-                level=level,
-                prefix="docx",
-                metadata={"style_name": style_name},
+            blocks.append(
+                {
+                    "type": "heading",
+                    "text": heading_text,
+                    "heading_level": level,
+                    "section_path": " > ".join(section_stack),
+                    "page": getattr(meta, "page_number", None) if meta else None,
+                    "block_index": idx,
+                }
             )
-        )
-        order += 1
+        else:
+            block_type = {
+                "NarrativeText": "paragraph",
+                "ListItem": "list_item",
+                "Table": "table",
+                "Image": "image_caption",
+            }.get(el_type, "paragraph")
 
-    return blocks
+            blocks.append(
+                {
+                    "type": block_type,
+                    "text": text,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                    "page": getattr(meta, "page_number", None) if meta else None,
+                    "block_index": idx,
+                }
+            )
+
+    return clean_blocks(blocks)
 
 
-def parse_docx_document(file_path: str, source_type: str = "folder") -> ParsedDocument:
-    """
-    解析 docx 文档，输出统一的 ParsedDocument。
-
-    第一版目标：
-    - 提取段落文本
-    - 识别 Word 原生标题样式
-    - 保留段落边界
-    - 输出统一 blocks
-    """
-    path = Path(file_path)
-
-    if not path.exists():
-        raise FileNotFoundError(f"文件不存在: {file_path}")
-
-    if not path.is_file():
-        raise ValueError(f"不是有效文件: {file_path}")
+def _parse_with_python_docx(path: Path) -> list[dict[str, Any]]:
+    from docx import Document
 
     doc = Document(str(path))
+    blocks: list[dict[str, Any]] = []
+    section_stack: list[str] = []
 
-    raw_text = extract_docx_raw_text(doc)
-    blocks = parse_docx_paragraphs(doc)
-    clean_text = "\n\n".join(block.text for block in blocks if block.text)
+    for i, para in enumerate(doc.paragraphs):
+        text = (para.text or "").strip()
+        if not text:
+            continue
 
-    return ParsedDocument(
-        title=path.stem,
-        source_type=source_type,
-        file_type="docx",
-        source_path=str(path.resolve()),
-        raw_text=raw_text,
-        clean_text=clean_text,
-        blocks=blocks,
-        metadata={
-            "parser": "python-docx",
-            "paragraph_count": len(blocks),
-        },
-    )
+        style_name = ""
+        try:
+            style_name = para.style.name or ""
+        except Exception:
+            style_name = ""
+
+        style_lower = style_name.lower()
+
+        if style_lower.startswith("heading"):
+            m = re.search(r"heading\s*(\d+)", style_lower)
+            level = int(m.group(1)) if m else 1
+            section_path = _section_path_push(section_stack, text, level)
+            blocks.append(
+                {
+                    "type": "heading",
+                    "text": text,
+                    "heading_level": level,
+                    "section_path": section_path,
+                    "block_index": i,
+                }
+            )
+            continue
+
+        if re.match(r"^\s*([-*•]|\d+[.)、])\s+.+$", text):
+            blocks.append(
+                {
+                    "type": "list_item",
+                    "text": text,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                    "block_index": i,
+                }
+            )
+            continue
+
+        blocks.append(
+            {
+                "type": "paragraph",
+                "text": text,
+                "section_path": " > ".join(section_stack) if section_stack else None,
+                "block_index": i,
+            }
+        )
+
+    return clean_blocks(blocks)
+
+
+class DocxParser(BaseParser):
+    file_type = "docx"
+
+    def parse(self, file_path: str | Path) -> ParsedDocument:
+        path = Path(file_path)
+        errors: list[str] = []
+
+        for parser_name, parser_func in [
+            ("docling", _parse_with_docling),
+            ("unstructured", _parse_with_unstructured),
+            ("python-docx", _parse_with_python_docx),
+        ]:
+            try:
+                blocks = parser_func(path)
+                if blocks:
+                    content = "\n\n".join(
+                        b["text"] for b in blocks if b.get("type") != "heading"
+                    ).strip()
+                    return ParsedDocument(
+                        title=path.stem,
+                        content=content,
+                        blocks=blocks,
+                        source_path=str(path),
+                        file_type=self.file_type,
+                        metadata={"parser_used": parser_name, "errors": errors},
+                    )
+            except Exception as e:
+                errors.append(f"{parser_name}: {e}")
+
+        raise RuntimeError(f"failed to parse docx: {path} | errors={errors}")
