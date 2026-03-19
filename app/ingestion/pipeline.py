@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.ingestion.detectors import detect_file_type
-from app.ingestion.parsers import DocxParser, ParsedDocument, PdfParser, TextParser
+from app.ingestion.parsers.docx_parser import DocxParser
+from app.ingestion.parsers.pdf_parser import PdfParser
+from app.ingestion.parsers.text_parser import TextParser
+from app.ingestion.schemas import ParsedDocument
 
 
 def parse_document(file_path: str | Path) -> ParsedDocument:

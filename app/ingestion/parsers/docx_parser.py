@@ -34,7 +34,7 @@ def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
                         "section_path": " > ".join(section_stack) if section_stack else None,
                     }
                 )
-        para_buf = []
+            para_buf = []
 
     for line in lines:
         s = line.strip()
@@ -92,60 +92,6 @@ def _parse_with_docling(path: Path) -> list[dict[str, Any]]:
     result = converter.convert(str(path))
     markdown_text = result.document.export_to_markdown()
     return _docling_markdown_to_blocks(markdown_text)
-
-
-def _parse_with_unstructured(path: Path) -> list[dict[str, Any]]:
-    from unstructured.partition.auto import partition
-
-    elements = partition(filename=str(path))
-    blocks: list[dict[str, Any]] = []
-    section_stack: list[str] = []
-
-    for idx, el in enumerate(elements):
-        text = getattr(el, "text", "") or ""
-        text = text.strip()
-        if not text:
-            continue
-
-        el_type = el.__class__.__name__
-        meta = getattr(el, "metadata", None)
-
-        if el_type == "Title":
-            heading_text = text
-            level = 1
-            while len(section_stack) >= level:
-                section_stack.pop()
-            section_stack.append(heading_text)
-
-            blocks.append(
-                {
-                    "type": "heading",
-                    "text": heading_text,
-                    "heading_level": level,
-                    "section_path": " > ".join(section_stack),
-                    "page": getattr(meta, "page_number", None) if meta else None,
-                    "block_index": idx,
-                }
-            )
-        else:
-            block_type = {
-                "NarrativeText": "paragraph",
-                "ListItem": "list_item",
-                "Table": "table",
-                "Image": "image_caption",
-            }.get(el_type, "paragraph")
-
-            blocks.append(
-                {
-                    "type": block_type,
-                    "text": text,
-                    "section_path": " > ".join(section_stack) if section_stack else None,
-                    "page": getattr(meta, "page_number", None) if meta else None,
-                    "block_index": idx,
-                }
-            )
-
-    return clean_blocks(blocks)
 
 
 def _parse_with_python_docx(path: Path) -> list[dict[str, Any]]:
@@ -215,7 +161,6 @@ class DocxParser(BaseParser):
 
         for parser_name, parser_func in [
             ("docling", _parse_with_docling),
-            ("unstructured", _parse_with_unstructured),
             ("python-docx", _parse_with_python_docx),
         ]:
             try:

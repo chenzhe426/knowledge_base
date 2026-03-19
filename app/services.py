@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import math
 from pathlib import Path
@@ -16,10 +18,12 @@ from app.config import (
 from app.db import (
     clear_chunks_by_document_id,
     get_all_chunks,
+    get_all_documents,
     get_chunks_by_document_id,
     get_document_by_id,
     insert_chunk,
     insert_document,
+    search_documents,
 )
 from app.ingestion.pipeline import parse_document, parse_documents_from_folder
 from app.ingestion.schemas import ParsedDocument
@@ -56,17 +60,16 @@ def _normalize_section_path(value: Any) -> list[str]:
     return []
 
 
+def estimate_token_count(text: str) -> int:
+    if not text:
+        return 0
+    chinese_chars = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    ascii_words = len([part for part in text.split() if part.strip()])
+    punctuation_bonus = max(1, len(text) // 80)
+    return chinese_chars + ascii_words + punctuation_bonus
+
+
 def block_to_dict(block: Any, fallback_index: int = 0) -> dict[str, Any]:
-    """
-    把 ingestion 输出的 block 统一成 services 内部格式。
-    新版 ingestion block 推荐字段：
-    - type
-    - text
-    - section_path
-    - heading_level
-    - page
-    - block_index
-    """
     if hasattr(block, "model_dump"):
         block = block.model_dump()
 
@@ -97,17 +100,23 @@ def block_to_dict(block: Any, fallback_index: int = 0) -> dict[str, Any]:
     }
 
 
+def normalize_block(block: dict[str, Any], fallback_order: int = 0) -> dict[str, Any]:
+    text = (block.get("text") or "").strip()
+    metadata = block.get("metadata") or {}
+
+    return {
+        "block_id": block.get("block_id") or f"block_{fallback_order}",
+        "block_type": (block.get("block_type") or block.get("type") or "paragraph").strip().lower(),
+        "text": text,
+        "order": block.get("order", block.get("block_index", fallback_order)),
+        "page_num": block.get("page_num", block.get("page")),
+        "level": block.get("level", block.get("heading_level")),
+        "section_path": _normalize_section_path(block.get("section_path")),
+        "metadata": metadata,
+    }
+
+
 def parsed_document_to_db_payload(doc: ParsedDocument) -> dict[str, Any]:
-    """
-    把 ParsedDocument 转成 documents 表可直接存储的 payload。
-    新版 ParsedDocument:
-    - title
-    - content
-    - blocks
-    - source_path
-    - file_type
-    - metadata
-    """
     title = (doc.title or "").strip() or Path(doc.source_path or "").stem or "未命名文档"
     content = (doc.content or "").strip()
 
@@ -162,7 +171,6 @@ def import_single_document(file_path: str) -> dict[str, Any]:
 
 def import_documents(folder: str) -> dict[str, Any]:
     parsed_documents = parse_documents_from_folder(folder_path=folder)
-
     imported: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
 
@@ -252,12 +260,9 @@ def split_text(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[dict[str, Any]]:
-    """
-    保留兼容版字符切分函数。
-    正式索引流程优先走 block-aware chunking。
-    """
     if not text or not text.strip():
         return []
+
     if overlap >= chunk_size:
         raise ValueError("overlap 必须小于 chunk_size")
 
@@ -269,6 +274,7 @@ def split_text(
     while start < text_length:
         end = min(start + chunk_size, text_length)
         chunk_text = text[start:end].strip()
+
         if chunk_text:
             chunks.append(
                 {
@@ -286,46 +292,19 @@ def split_text(
                     "metadata": {"strategy": "legacy_char_split"},
                 }
             )
+
         if end >= text_length:
             break
+
         start = end - overlap
 
     return chunks
 
 
-def estimate_token_count(text: str) -> int:
-    if not text:
-        return 0
-
-    chinese_chars = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
-    ascii_words = len([part for part in text.split() if part.strip()])
-    punctuation_bonus = max(1, len(text) // 80)
-    return chinese_chars + ascii_words + punctuation_bonus
-
-
-def normalize_block(block: dict[str, Any], fallback_order: int = 0) -> dict[str, Any]:
-    text = (block.get("text") or "").strip()
-    metadata = block.get("metadata") or {}
-
-    return {
-        "block_id": block.get("block_id") or f"block_{fallback_order}",
-        "block_type": (block.get("block_type") or block.get("type") or "paragraph").strip().lower(),
-        "text": text,
-        "order": block.get("order", block.get("block_index", fallback_order)),
-        "page_num": block.get("page_num", block.get("page")),
-        "level": block.get("level", block.get("heading_level")),
-        "section_path": _normalize_section_path(block.get("section_path")),
-        "metadata": metadata,
-    }
-
-
 def build_blocks_from_content(content: str) -> list[dict[str, Any]]:
-    """
-    兼容旧数据：如果 documents 里没有 blocks_json，
-    就把 content 按段落退化成 paragraph blocks。
-    """
     paragraphs = [p.strip() for p in (content or "").split("\n\n") if p.strip()]
     blocks: list[dict[str, Any]] = []
+
     for idx, para in enumerate(paragraphs):
         blocks.append(
             {
@@ -339,6 +318,7 @@ def build_blocks_from_content(content: str) -> list[dict[str, Any]]:
                 "metadata": {},
             }
         )
+
     return blocks
 
 
@@ -356,7 +336,6 @@ def group_table_rows(table_text: str, max_chars: int) -> list[str]:
 
     header = lines[0]
     rows = lines[1:]
-
     parts: list[str] = []
     current = header
 
@@ -384,10 +363,8 @@ def build_chunk_text(
 
     if doc_title:
         parts.append(f"文档标题：{doc_title}")
-
     if section_path:
         parts.append(f"章节：{' > '.join(section_path)}")
-
     parts.append(f"内容类型：{chunk_type}")
     parts.append("")
     parts.append(body_text.strip())
@@ -446,14 +423,6 @@ def split_blocks_into_chunks(
     max_tokens: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[dict[str, Any]]:
-    """
-    基于 blocks 的 chunk 切分。
-    核心原则：
-    1. heading 不单独落最终 chunk，主要用于更新 section_path
-    2. paragraph / list_item 可聚合
-    3. table 单独策略
-    4. caption 尽量并入邻近正文
-    """
     if not blocks:
         return []
 
@@ -462,153 +431,76 @@ def split_blocks_into_chunks(
         for idx, block in enumerate(blocks)
         if (block.get("text") or "").strip()
     ]
-    if not normalized_blocks:
-        return []
 
     chunks: list[dict[str, Any]] = []
     current_blocks: list[dict[str, Any]] = []
-    current_tokens = 0
-    current_section_path: list[str] = []
+    current_section: list[str] = []
 
-    def flush_current(chunk_type: str = "paragraph"):
-        nonlocal current_blocks, current_tokens
+    def flush_current():
+        nonlocal current_blocks
+        if not current_blocks:
+            return
         chunk = finalize_chunk(
             doc_title=doc_title,
             current_blocks=current_blocks,
-            section_path=current_section_path,
-            chunk_type=chunk_type,
+            section_path=current_section,
+            chunk_type=current_blocks[0]["block_type"] if current_blocks else "paragraph",
         )
         if chunk:
             chunks.append(chunk)
         current_blocks = []
-        current_tokens = 0
-
-    def apply_heading(block: dict[str, Any]):
-        nonlocal current_section_path
-
-        if block.get("section_path"):
-            current_section_path = list(block["section_path"])
-            return
-
-        heading_text = block["text"].strip()
-        if not heading_text:
-            return
-
-        level = block.get("level")
-        if level is None or level <= 0:
-            level = 1
-
-        while len(current_section_path) >= level:
-            current_section_path.pop()
-
-        current_section_path.append(heading_text)
 
     for block in normalized_blocks:
         block_type = block["block_type"]
-        text = block["text"].strip()
-        if not text:
-            continue
+        text = block["text"]
+        section_path = block["section_path"]
+        token_count = estimate_token_count(text)
 
-        if block_type in {"heading", "title"}:
-            flush_current("paragraph")
-            apply_heading(block)
+        if block_type == "heading":
+            flush_current()
+            current_section = section_path
             continue
 
         if block_type == "table":
-            flush_current("paragraph")
-            table_parts = group_table_rows(text, max_chars=max(200, max_tokens))
-            for part_idx, table_part in enumerate(table_parts):
-                table_block = {
-                    **block,
-                    "text": table_part,
-                    "metadata": {
-                        **(block.get("metadata") or {}),
-                        "table_part_index": part_idx,
-                        "table_part_count": len(table_parts),
-                    },
-                }
+            flush_current()
+            table_parts = group_table_rows(text, max_chars=max(200, max_tokens * 2))
+            for part_idx, part in enumerate(table_parts):
+                single_block = [dict(block, text=part)]
                 chunk = finalize_chunk(
                     doc_title=doc_title,
-                    current_blocks=[table_block],
-                    section_path=current_section_path,
+                    current_blocks=single_block,
+                    section_path=section_path,
                     chunk_type="table",
                 )
                 if chunk:
+                    chunk["metadata"]["table_part_index"] = part_idx
+                    chunk["metadata"]["table_part_total"] = len(table_parts)
                     chunks.append(chunk)
             continue
 
-        if block_type in {"image_caption", "caption"}:
-            block_token = estimate_token_count(text)
-            if current_blocks and current_tokens + block_token <= max_tokens:
-                current_blocks.append(block)
-                current_tokens += block_token
-            else:
-                chunk = finalize_chunk(
-                    doc_title=doc_title,
-                    current_blocks=[block],
-                    section_path=current_section_path,
-                    chunk_type="caption",
-                )
-                if chunk:
-                    chunks.append(chunk)
-            continue
+        if not current_blocks:
+            current_section = section_path
 
-        if block_type not in {"paragraph", "list_item", "quote", "code"}:
-            block_type = "paragraph"
+        current_text = "\n\n".join(b["text"] for b in current_blocks).strip()
+        current_tokens = estimate_token_count(current_text)
 
-        block_token = estimate_token_count(text)
+        need_flush = False
+        if current_blocks and section_path != current_section:
+            need_flush = True
+        elif current_blocks and current_tokens + token_count > max_tokens:
+            need_flush = True
 
-        if block_token > max_tokens:
-            flush_current("paragraph")
+        if need_flush:
+            flush_current()
+            current_section = section_path
 
-            sentences = [s.strip() for s in text.split("\n") if s.strip()]
-            if len(sentences) <= 1:
-                hard_parts = [
-                    text[i:i + max_tokens].strip()
-                    for i in range(0, len(text), max_tokens)
-                    if text[i:i + max_tokens].strip()
-                ]
-            else:
-                hard_parts = []
-                current_part = ""
-                for sentence in sentences:
-                    candidate = f"{current_part}\n{sentence}".strip() if current_part else sentence
-                    if estimate_token_count(candidate) <= max_tokens:
-                        current_part = candidate
-                    else:
-                        if current_part:
-                            hard_parts.append(current_part)
-                        current_part = sentence
-                if current_part:
-                    hard_parts.append(current_part)
-
-            for part in hard_parts:
-                single_block = {**block, "text": part}
-                chunk = finalize_chunk(
-                    doc_title=doc_title,
-                    current_blocks=[single_block],
-                    section_path=current_section_path,
-                    chunk_type="list" if block["block_type"] == "list_item" else "paragraph",
-                )
-                if chunk:
-                    chunks.append(chunk)
-            continue
-
-        if current_blocks and current_tokens + block_token > max_tokens:
-            first_type = current_blocks[0]["block_type"]
-            flush_current("list" if first_type == "list_item" else "paragraph")
+            if overlap > 0 and chunks:
+                prev_blocks = current_blocks[-1:] if current_blocks else []
+                current_blocks = [*prev_blocks] if prev_blocks else []
 
         current_blocks.append(block)
-        current_tokens += block_token
 
-    if current_blocks:
-        first_type = current_blocks[0]["block_type"]
-        flush_current("list" if first_type == "list_item" else "paragraph")
-
-    for chunk in chunks:
-        chunk["metadata"]["overlap_mode"] = "semantic_heading_context"
-        chunk["metadata"]["configured_overlap"] = overlap
-
+    flush_current()
     return chunks
 
 
@@ -620,29 +512,28 @@ def get_embedding(text: str) -> list[float]:
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=120)
+        response = requests.post(url, json=payload, timeout=60)
         response.raise_for_status()
         data = response.json()
-        embedding = data.get("embedding")
-        if not embedding:
-            raise RuntimeError("Embedding 返回为空")
-        return embedding
+        if "embedding" not in data:
+            raise RuntimeError("embedding 字段不存在")
+        return data["embedding"]
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Embedding 请求失败: {e}") from e
+        raise RuntimeError(f"embedding 请求失败: {e}") from e
 
 
 def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
     if not vec1 or not vec2 or len(vec1) != len(vec2):
-        return 0.0
+        return -1.0
 
-    dot_product = sum(a * b for a, b in zip(vec1, vec2))
+    dot = sum(a * b for a, b in zip(vec1, vec2))
     norm1 = math.sqrt(sum(a * a for a in vec1))
     norm2 = math.sqrt(sum(b * b for b in vec2))
 
     if norm1 == 0 or norm2 == 0:
-        return 0.0
+        return -1.0
 
-    return dot_product / (norm1 * norm2)
+    return dot / (norm1 * norm2)
 
 
 def index_document(
@@ -656,7 +547,7 @@ def index_document(
 
     title = row["title"]
     content = row.get("content") or ""
-    blocks = _safe_json_loads(row.get("blocks_json"), default=[])
+    blocks = row.get("blocks") or []
 
     if not blocks:
         blocks = build_blocks_from_content(content)
@@ -672,39 +563,36 @@ def index_document(
 
     saved_chunks: list[dict[str, Any]] = []
 
-    for idx, item in enumerate(chunks):
-        embedding = get_embedding(item["chunk_text"])
-        insert_chunk(
+    for idx, chunk in enumerate(chunks):
+        embedding = get_embedding(chunk["chunk_text"])
+        chunk_id = insert_chunk(
             document_id=doc_id,
-            chunk_index=idx,
-            chunk_text=item["chunk_text"],
+            chunk_text=chunk["chunk_text"],
             embedding=embedding,
-            char_start=item["char_start"],
-            char_end=item["char_end"],
-            chunk_type=item["chunk_type"],
-            section_title=item["section_title"],
-            section_path=item["section_path"],
-            page_start=item["page_start"],
-            page_end=item["page_end"],
-            block_start_order=item["block_start_order"],
-            block_end_order=item["block_end_order"],
-            token_count=item["token_count"],
-            metadata=item["metadata"],
+            chunk_type=chunk.get("chunk_type", "paragraph"),
+            section_title=chunk.get("section_title"),
+            section_path=chunk.get("section_path", []),
+            char_start=chunk.get("char_start", 0),
+            char_end=chunk.get("char_end", len(chunk["chunk_text"])),
+            page_start=chunk.get("page_start"),
+            page_end=chunk.get("page_end"),
+            block_start_order=chunk.get("block_start_order"),
+            block_end_order=chunk.get("block_end_order"),
+            token_count=chunk.get("token_count", estimate_token_count(chunk["chunk_text"])),
+            metadata=chunk.get("metadata", {}),
         )
+
         saved_chunks.append(
             {
-                "document_id": doc_id,
-                "title": title,
-                "chunk_index": idx,
-                "chunk_type": item["chunk_type"],
-                "section_title": item["section_title"],
-                "section_path": item["section_path"],
-                "page_start": item["page_start"],
-                "page_end": item["page_end"],
-                "block_start_order": item["block_start_order"],
-                "block_end_order": item["block_end_order"],
-                "token_count": item["token_count"],
-                "text_preview": item["chunk_text"][:160],
+                "id": chunk_id,
+                "index": idx,
+                "chunk_type": chunk.get("chunk_type"),
+                "section_title": chunk.get("section_title"),
+                "section_path": chunk.get("section_path", []),
+                "page_start": chunk.get("page_start"),
+                "page_end": chunk.get("page_end"),
+                "token_count": chunk.get("token_count"),
+                "preview": chunk["chunk_text"][:160],
             }
         )
 
@@ -719,83 +607,27 @@ def index_document(
 def retrieve_chunks(query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]:
     query_embedding = get_embedding(query)
     all_chunks = get_all_chunks()
+    scored: list[dict[str, Any]] = []
 
-    scored_results: list[dict[str, Any]] = []
-
-    for row in all_chunks:
-        try:
-            chunk_embedding = json.loads(row["embedding"])
-        except Exception:
+    for chunk in all_chunks:
+        emb = chunk.get("embedding")
+        if not emb:
             continue
-
-        score = cosine_similarity(query_embedding, chunk_embedding)
-        scored_results.append(
+        score = cosine_similarity(query_embedding, emb)
+        scored.append(
             {
-                "chunk_id": row["id"],
-                "document_id": row["document_id"],
-                "title": row["title"],
-                "chunk_index": row["chunk_index"],
-                "chunk_type": row.get("chunk_type"),
-                "section_title": row.get("section_title"),
-                "section_path": _safe_json_loads(row.get("section_path_json"), default=[]),
-                "text": row["chunk_text"],
-                "score": round(score, 6),
-                "char_start": row["char_start"],
-                "char_end": row["char_end"],
-                "page_start": row.get("page_start"),
-                "page_end": row.get("page_end"),
-                "block_start_order": row.get("block_start_order"),
-                "block_end_order": row.get("block_end_order"),
-                "token_count": row.get("token_count", 0),
-                "metadata": _safe_json_loads(row.get("metadata_json"), default={}),
+                **chunk,
+                "score": score,
             }
         )
 
-    scored_results.sort(key=lambda x: x["score"], reverse=True)
-    return scored_results[:top_k]
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:top_k]
 
 
-def build_rag_prompt(question: str, retrieved_chunks: list[dict[str, Any]]) -> str:
-    context_parts = []
-
-    for i, chunk in enumerate(retrieved_chunks, start=1):
-        section_text = " > ".join(chunk.get("section_path", []) or [])
-        page_text = ""
-        if chunk.get("page_start") is not None and chunk.get("page_end") is not None:
-            page_text = f" | 页码: {chunk['page_start']}-{chunk['page_end']}"
-        elif chunk.get("page_start") is not None:
-            page_text = f" | 页码: {chunk['page_start']}"
-
-        section_display = f" | 章节: {section_text}" if section_text else ""
-        chunk_type = chunk.get("chunk_type") or "paragraph"
-
-        context_parts.append(
-            f"[来源{i}] 文档: {chunk['title']} | chunk: {chunk['chunk_index']} | 类型: {chunk_type}{section_display}{page_text}\n{chunk['text']}"
-        )
-
-    context_text = "\n\n".join(context_parts)
-
-    return f"""
-你是一个知识库问答助手，请严格根据提供的资料回答问题。
-
-要求：
-1. 只能依据“资料片段”作答，不要编造。
-2. 如果资料不足以回答，请明确说“根据当前知识库内容无法确定”。
-3. 回答使用中文。
-4. 回答后附上你引用的来源编号，例如：[来源1]。
-5. 尽量简洁清晰。
-6. 优先利用章节、页码、表格等结构信息帮助定位答案。
-
-用户问题：
-{question}
-
-资料片段：
-{context_text}
-""".strip()
-
-
-def generate_answer(question: str, retrieved_chunks: list[dict[str, Any]]) -> str:
-    prompt = build_rag_prompt(question, retrieved_chunks)
+def answer_question(query: str, top_k: int = DEFAULT_TOP_K) -> dict[str, Any]:
+    retrieved = retrieve_chunks(query=query, top_k=top_k)
+    context = "\n\n".join(item["chunk_text"] for item in retrieved)
 
     url = f"{OLLAMA_BASE_URL}/api/chat"
     payload = {
@@ -803,11 +635,15 @@ def generate_answer(question: str, retrieved_chunks: list[dict[str, Any]]) -> st
         "messages": [
             {
                 "role": "system",
-                "content": "你是一个严谨的 RAG 问答助手。",
+                "content": (
+                    "你是一个基于知识库回答问题的助手。"
+                    "请严格依据提供的上下文作答；"
+                    "如果上下文不足，请明确说明“知识库中没有足够信息”。"
+                ),
             },
             {
                 "role": "user",
-                "content": prompt,
+                "content": f"问题：{query}\n\n参考上下文：\n{context}",
             },
         ],
         "stream": False,
@@ -817,54 +653,66 @@ def generate_answer(question: str, retrieved_chunks: list[dict[str, Any]]) -> st
         response = requests.post(url, json=payload, timeout=120)
         response.raise_for_status()
         data = response.json()
-        return data["message"]["content"]
+        answer = data["message"]["content"]
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"LLM 请求失败: {e}") from e
+        raise RuntimeError(f"Ollama 请求失败: {e}") from e
     except KeyError as e:
-        raise RuntimeError("LLM 返回格式异常") from e
-
-
-def answer_question(query: str, top_k: int = DEFAULT_TOP_K) -> dict[str, Any]:
-    retrieved = retrieve_chunks(query=query, top_k=top_k)
-    if not retrieved:
-        return {
-            "question": query,
-            "answer": "当前知识库中没有可用的检索结果。",
-            "sources": [],
-        }
-
-    answer = generate_answer(question=query, retrieved_chunks=retrieved)
+        raise RuntimeError("Ollama 返回格式异常") from e
 
     return {
         "question": query,
         "answer": answer,
-        "sources": retrieved,
+        "sources": [
+            {
+                "document_id": item["document_id"],
+                "chunk_id": item["id"],
+                "score": item["score"],
+                "chunk_type": item.get("chunk_type"),
+                "section_title": item.get("section_title"),
+                "section_path": item.get("section_path", []),
+                "page_start": item.get("page_start"),
+                "page_end": item.get("page_end"),
+                "preview": item["chunk_text"][:200],
+            }
+            for item in retrieved
+        ],
     }
+
+
+def list_documents() -> list[dict[str, Any]]:
+    rows = get_all_documents()
+    result = []
+    for row in rows:
+        result.append(
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "file_path": row.get("file_path"),
+                "file_type": row.get("file_type"),
+                "source_type": row.get("source_type"),
+                "char_count": len(row.get("content") or ""),
+                "block_count": row.get("block_count", 0),
+                "created_at": str(row.get("created_at")),
+            }
+        )
+    return result
 
 
 def get_document_chunks(doc_id: int) -> list[dict[str, Any]]:
     rows = get_chunks_by_document_id(doc_id)
-
-    results: list[dict[str, Any]] = []
+    result = []
     for row in rows:
-        results.append(
+        result.append(
             {
-                "chunk_id": row["id"],
+                "id": row["id"],
                 "document_id": row["document_id"],
-                "title": row["title"],
-                "chunk_index": row["chunk_index"],
                 "chunk_type": row.get("chunk_type"),
                 "section_title": row.get("section_title"),
-                "section_path": _safe_json_loads(row.get("section_path_json"), default=[]),
-                "text": row["chunk_text"],
-                "char_start": row["char_start"],
-                "char_end": row["char_end"],
+                "section_path": row.get("section_path", []),
                 "page_start": row.get("page_start"),
                 "page_end": row.get("page_end"),
-                "block_start_order": row.get("block_start_order"),
-                "block_end_order": row.get("block_end_order"),
-                "token_count": row.get("token_count", 0),
-                "metadata": _safe_json_loads(row.get("metadata_json"), default={}),
+                "token_count": row.get("token_count"),
+                "preview": (row.get("chunk_text") or "")[:200],
             }
         )
-    return results
+    return result

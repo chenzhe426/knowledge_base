@@ -1,26 +1,17 @@
-import logging
+from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
-from app.db import (
-    get_all_documents,
-    get_document_by_id,
-    init_db,
-    search_documents,
-)
+from app.config import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE
+from app.db import init_db
 from app.models import (
     AskRequest,
     AskResponse,
-    ChunkResponse,
-    DocumentResponse,
-    ImportRequest,
-    ImportResponse,
+    GenericResponse,
+    ImportFileRequest,
+    ImportFolderRequest,
     IndexRequest,
-    IndexResponse,
-    RetrieveRequest,
-    RetrieveResponse,
-    SingleFileImportRequest,
-    SingleFileImportResponse,
+    SummaryRequest,
 )
 from app.services import (
     answer_question,
@@ -28,14 +19,15 @@ from app.services import (
     import_documents,
     import_single_document,
     index_document,
-    retrieve_chunks,
+    list_documents,
     summarize_text,
 )
-from app.utils import setup_logger
 
-setup_logger()
+app = FastAPI(title="knowledge_base", version="1.0.0")
 
-app = FastAPI(title="Knowledge Base RAG API")
+@app.get("/")
+def root():
+    return {"message": "knowledge_base api is running"}
 
 
 @app.on_event("startup")
@@ -43,155 +35,68 @@ def startup_event():
     init_db()
 
 
-@app.get("/")
-def home():
-    logging.info("访问首页接口")
-    return {"message": "Knowledge Base RAG API is running"}
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 
-@app.get("/documents", response_model=list[DocumentResponse])
-def list_documents():
-    docs = get_all_documents()
-    return [
-        DocumentResponse(
-            id=row["id"],
-            title=row["title"],
-            file_path=row.get("file_path"),
-            created_at=str(row["created_at"]) if row.get("created_at") else None,
-        )
-        for row in docs
-    ]
+@app.get("/documents", response_model=GenericResponse)
+def api_list_documents():
+    return GenericResponse(data=list_documents())
 
 
-@app.get("/search")
-def search(q: str):
-    docs = search_documents(q)
-    return {
-        "results": [
-            DocumentResponse(
-                id=row["id"],
-                title=row["title"],
-                file_path=row.get("file_path"),
-                created_at=str(row["created_at"]) if row.get("created_at") else None,
-            )
-            for row in docs
-        ]
-    }
-
-
-@app.get("/documents/{doc_id}", response_model=DocumentResponse)
-def get_document(doc_id: int):
-    row = get_document_by_id(doc_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="document not found")
-
-    return DocumentResponse(
-        id=row["id"],
-        title=row["title"],
-        content=row.get("content"),
-        file_path=row.get("file_path"),
-        created_at=str(row["created_at"]) if row.get("created_at") else None,
-    )
-
-
-@app.post("/documents/import", response_model=ImportResponse)
-def import_docs(payload: ImportRequest):
+@app.get("/documents/{doc_id}/chunks", response_model=GenericResponse)
+def api_get_document_chunks(doc_id: int):
     try:
-        result = import_documents(payload.folder)
-        return ImportResponse(**result)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return GenericResponse(data=get_document_chunks(doc_id))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@app.post("/documents/import/file", response_model=SingleFileImportResponse)
-def import_doc_file(payload: SingleFileImportRequest):
+@app.post("/import/folder", response_model=GenericResponse)
+def api_import_folder(req: ImportFolderRequest):
     try:
-        result = import_single_document(
-            file_path=payload.file_path,
-            source_type=payload.source_type,
-        )
-        return SingleFileImportResponse(**result)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        result = import_documents(req.folder)
+        return GenericResponse(data=result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@app.post("/documents/{doc_id}/summary")
-def summarize_document(doc_id: int):
-    row = get_document_by_id(doc_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="document not found")
-
+@app.post("/import/file", response_model=GenericResponse)
+def api_import_file(req: ImportFileRequest):
     try:
-        summary = summarize_text(row["content"])
-        return {"summary": summary}
+        result = import_single_document(req.file_path)
+        return GenericResponse(data=result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@app.post("/rag/index/{doc_id}", response_model=IndexResponse)
-def rag_index_document(doc_id: int, payload: IndexRequest):
-    row = get_document_by_id(doc_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="document not found")
-
+@app.post("/index", response_model=GenericResponse)
+def api_index(req: IndexRequest):
     try:
         result = index_document(
-            doc_id=doc_id,
-            chunk_size=payload.chunk_size,
-            overlap=payload.overlap,
+            doc_id=req.doc_id,
+            chunk_size=req.chunk_size or DEFAULT_CHUNK_SIZE,
+            overlap=req.overlap or DEFAULT_CHUNK_OVERLAP,
         )
-        return IndexResponse(**result)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return GenericResponse(data=result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@app.get("/chunks/{doc_id}", response_model=list[ChunkResponse])
-def list_document_chunks(doc_id: int):
-    row = get_document_by_id(doc_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="document not found")
-
+@app.post("/ask", response_model=AskResponse)
+def api_ask(req: AskRequest):
     try:
-        chunks = get_document_chunks(doc_id)
-        return [ChunkResponse(**chunk) for chunk in chunks]
+        result = answer_question(req.question, top_k=req.top_k)
+        return AskResponse(**result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@app.post("/rag/retrieve", response_model=RetrieveResponse)
-def rag_retrieve(payload: RetrieveRequest):
+@app.post("/summary", response_model=GenericResponse)
+def api_summary(req: SummaryRequest):
     try:
-        results = retrieve_chunks(query=payload.query, top_k=payload.top_k)
-        return RetrieveResponse(
-            query=payload.query,
-            results=[ChunkResponse(**item) for item in results],
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        result = summarize_text(req.text)
+        return GenericResponse(data={"summary": result})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/rag/ask", response_model=AskResponse)
-def rag_ask(payload: AskRequest):
-    try:
-        result = answer_question(query=payload.query, top_k=payload.top_k)
-        return AskResponse(
-            question=result["question"],
-            answer=result["answer"],
-            sources=[ChunkResponse(**item) for item in result["sources"]],
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e

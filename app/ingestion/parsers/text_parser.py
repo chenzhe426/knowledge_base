@@ -4,10 +4,9 @@ import re
 from pathlib import Path
 
 from app.ingestion.loaders import load_text_file
-from app.ingestion.normalizers import normalize_text, clean_blocks
+from app.ingestion.normalizers import clean_blocks, normalize_text
 from app.ingestion.parsers.base import BaseParser
 from app.ingestion.schemas import ParsedDocument
-
 
 _HEADING_PATTERNS = [
     re.compile(r"^\s{0,3}#{1,6}\s+(.+)$"),
@@ -24,10 +23,7 @@ def _is_heading(line: str) -> bool:
     s = line.strip()
     if not s:
         return False
-    for p in _HEADING_PATTERNS:
-        if p.match(s):
-            return True
-    return False
+    return any(p.match(s) for p in _HEADING_PATTERNS)
 
 
 def _is_list_item(line: str) -> bool:
@@ -50,10 +46,9 @@ class TextParser(BaseParser):
         path = Path(file_path)
         raw = load_text_file(path)
         text = normalize_text(raw)
-
         lines = [line.rstrip() for line in text.split("\n")]
-        blocks: list[dict] = []
 
+        blocks: list[dict] = []
         section_stack: list[str] = []
         paragraph_buf: list[str] = []
 
@@ -114,12 +109,10 @@ class TextParser(BaseParser):
         flush_paragraph()
 
         cleaned = clean_blocks(blocks)
-
         content = "\n\n".join(b["text"] for b in cleaned if b["type"] != "heading").strip()
-        title = path.stem
 
         return ParsedDocument(
-            title=title,
+            title=path.stem,
             content=content,
             blocks=cleaned,
             source_path=str(path),

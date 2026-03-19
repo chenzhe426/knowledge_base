@@ -34,7 +34,7 @@ def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
                         "section_path": " > ".join(section_stack) if section_stack else None,
                     }
                 )
-        para_buf = []
+            para_buf = []
 
     for line in lines:
         s = line.strip()
@@ -94,82 +94,29 @@ def _parse_with_docling(path: Path) -> list[dict[str, Any]]:
     return _docling_markdown_to_blocks(markdown_text)
 
 
-def _parse_with_unstructured(path: Path) -> list[dict[str, Any]]:
-    from unstructured.partition.auto import partition
+def _parse_with_pdfplumber(path: Path) -> list[dict[str, Any]]:
+    import pdfplumber
 
-    elements = partition(filename=str(path))
-    blocks: list[dict[str, Any]] = []
-    section_stack: list[str] = []
-
-    for idx, el in enumerate(elements):
-        text = getattr(el, "text", "") or ""
-        text = text.strip()
-        if not text:
-            continue
-
-        el_type = el.__class__.__name__
-        meta = getattr(el, "metadata", None)
-
-        if el_type == "Title":
-            heading_text = text
-            level = 1
-            while len(section_stack) >= level:
-                section_stack.pop()
-            section_stack.append(heading_text)
-
-            blocks.append(
-                {
-                    "type": "heading",
-                    "text": heading_text,
-                    "heading_level": level,
-                    "section_path": " > ".join(section_stack),
-                    "page": getattr(meta, "page_number", None) if meta else None,
-                    "block_index": idx,
-                }
-            )
-        else:
-            block_type = {
-                "NarrativeText": "paragraph",
-                "ListItem": "list_item",
-                "Table": "table",
-                "Image": "image_caption",
-            }.get(el_type, "paragraph")
-
-            blocks.append(
-                {
-                    "type": block_type,
-                    "text": text,
-                    "section_path": " > ".join(section_stack) if section_stack else None,
-                    "page": getattr(meta, "page_number", None) if meta else None,
-                    "block_index": idx,
-                }
-            )
-
-    return clean_blocks(blocks)
-
-
-def _parse_with_pypdf(path: Path) -> list[dict[str, Any]]:
-    from pypdf import PdfReader
-
-    reader = PdfReader(str(path))
     blocks: list[dict[str, Any]] = []
 
-    for page_idx, page in enumerate(reader.pages, start=1):
-        text = page.extract_text() or ""
-        text = normalize_text(text)
-        if not text:
-            continue
+    with pdfplumber.open(str(path)) as pdf:
+        for page_idx, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            text = normalize_text(text)
+            if not text:
+                continue
 
-        paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-        for para in paras:
-            blocks.append(
-                {
-                    "type": "paragraph",
-                    "text": para,
-                    "page": page_idx,
-                    "section_path": None,
-                }
-            )
+            paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+            for para_idx, para in enumerate(paras):
+                blocks.append(
+                    {
+                        "type": "paragraph",
+                        "text": para,
+                        "page": page_idx,
+                        "section_path": None,
+                        "block_index": len(blocks) + para_idx,
+                    }
+                )
 
     return clean_blocks(blocks)
 
@@ -183,8 +130,7 @@ class PdfParser(BaseParser):
 
         for parser_name, parser_func in [
             ("docling", _parse_with_docling),
-            ("unstructured", _parse_with_unstructured),
-            ("pypdf", _parse_with_pypdf),
+            ("pdfplumber", _parse_with_pdfplumber),
         ]:
             try:
                 blocks = parser_func(path)

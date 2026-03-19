@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown"}
 DOCX_EXTENSIONS = {".docx"}
 PDF_EXTENSIONS = {".pdf"}
@@ -16,5 +15,4 @@ def detect_file_type(file_path: str | Path) -> str:
         return "docx"
     if ext in PDF_EXTENSIONS:
         return "pdf"
-
     return "unknown"
