@@ -140,26 +140,39 @@ def summarize_text(text: str) -> str:
     return chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
 
 
-def chat_completion_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
-    raw = chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
-    raw = (raw or "").strip()
+def chat_completion(system_prompt: str, user_prompt: str) -> str:
+    system_text = normalize_whitespace(system_prompt or "")
+    user_text = normalize_whitespace(user_prompt or "")
 
-    if not raw:
-        return {}
+    messages: list[dict[str, str]] = []
+    if system_text:
+        messages.append({"role": "system", "content": system_text})
+    if user_text:
+        messages.append({"role": "user", "content": user_text})
 
-    fenced = raw
-    if "```" in raw:
-        import re
-
-        match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.S)
-        if match:
-            fenced = match.group(1).strip()
+    if not messages:
+        return ""
 
     try:
-        data = json.loads(fenced)
-        if isinstance(data, dict):
-            return data
-    except Exception:
-        pass
+        data = _post_json(
+            f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat",
+            {
+                "model": OLLAMA_MODEL,
+                "stream": False,
+                "messages": messages,
+            },
+        )
 
-    return {}
+        message = data.get("message") or {}
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+        response = data.get("response")
+        if isinstance(response, str) and response.strip():
+            return response.strip()
+
+        return ""
+
+    except Exception as e:
+        raise RuntimeError(f"llm request failed: {e}") from e
