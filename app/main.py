@@ -20,6 +20,33 @@ def print_json(data):
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def format_section_path(section_path) -> str:
+    if not section_path:
+        return "-"
+    if isinstance(section_path, str):
+        return section_path
+    return " > ".join(str(x) for x in section_path if str(x).strip()) or "-"
+
+
+def format_page_range(page_start, page_end) -> str:
+    if page_start is None and page_end is None:
+        return "-"
+    if page_start is not None and page_end is not None:
+        if page_start == page_end:
+            return str(page_start)
+        return f"{page_start}-{page_end}"
+    if page_start is not None:
+        return str(page_start)
+    return str(page_end)
+
+
+def truncate_text(text: str, max_len: int = 160) -> str:
+    text = (text or "").replace("\n", " ").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 3] + "..."
+
+
 def cmd_init_db():
     init_db()
     print("数据库初始化完成")
@@ -35,8 +62,30 @@ def cmd_import_file(file_path: str):
     print_json(result)
 
 
-def cmd_list_docs():
-    print_json(list_documents())
+def cmd_list_docs(as_json: bool = False):
+    docs = list_documents()
+    if as_json:
+        print_json(docs)
+        return
+
+    if not docs:
+        print("暂无文档")
+        return
+
+    print(f"文档总数: {len(docs)}")
+    print("-" * 120)
+    print(f"{'ID':<6}{'标题':<28}{'类型':<10}{'字符数':<10}{'Block数':<10}{'创建时间'}")
+    print("-" * 120)
+
+    for doc in docs:
+        title = truncate_text(doc.get("title", ""), 26)
+        file_type = doc.get("file_type") or "-"
+        char_count = doc.get("char_count") or 0
+        block_count = doc.get("block_count") or 0
+        created_at = doc.get("created_at") or "-"
+        print(f"{doc['id']:<6}{title:<28}{file_type:<10}{char_count:<10}{block_count:<10}{created_at}")
+
+    print("-" * 120)
 
 
 def cmd_index(doc_id: int, chunk_size: int, overlap: int):
@@ -44,9 +93,54 @@ def cmd_index(doc_id: int, chunk_size: int, overlap: int):
     print_json(result)
 
 
-def cmd_chunks(doc_id: int):
+def cmd_chunks(
+    doc_id: int,
+    full: bool = False,
+    as_json: bool = False,
+    limit: int | None = None,
+):
     result = get_document_chunks(doc_id)
-    print_json(result)
+
+    if as_json:
+        print_json(result)
+        return
+
+    if not result:
+        print(f"文档 {doc_id} 暂无 chunks")
+        return
+
+    rows = result[:limit] if limit and limit > 0 else result
+
+    print(f"文档ID: {doc_id}")
+    print(f"Chunk总数: {len(result)}")
+    if limit and limit > 0:
+        print(f"当前展示: {len(rows)}")
+    print("=" * 120)
+
+    for idx, chunk in enumerate(rows, start=1):
+        chunk_id = chunk.get("id")
+        chunk_type = chunk.get("chunk_type") or "-"
+        section_title = chunk.get("section_title") or "-"
+        section_path = format_section_path(chunk.get("section_path"))
+        page_range = format_page_range(chunk.get("page_start"), chunk.get("page_end"))
+        token_count = chunk.get("token_count") or "-"
+        preview = chunk.get("preview") or ""
+
+        print(f"[{idx}] Chunk ID: {chunk_id}")
+        print(f"类型       : {chunk_type}")
+        print(f"章节标题   : {section_title}")
+        print(f"章节路径   : {section_path}")
+        print(f"页码范围   : {page_range}")
+        print(f"Token估算  : {token_count}")
+        print("内容       :")
+        if full:
+            print(preview)
+        else:
+            print(truncate_text(preview, 220))
+        print("-" * 120)
+
+    if limit and len(result) > len(rows):
+        print(f"还有 {len(result) - len(rows)} 个 chunk 未展示，可去掉 --limit 查看全部。")
 
 
 def cmd_ask(question: str, top_k: int):
@@ -71,7 +165,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_file = subparsers.add_parser("import-file", help="导入单个文档")
     p_import_file.add_argument("file_path", type=str)
 
-    subparsers.add_parser("list-docs", help="查看文档列表")
+    p_list = subparsers.add_parser("list-docs", help="查看文档列表")
+    p_list.add_argument("--json", action="store_true", help="按 JSON 输出")
 
     p_index = subparsers.add_parser("index", help="为某篇文档切 chunk 并生成 embedding")
     p_index.add_argument("doc_id", type=int)
@@ -80,6 +175,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_chunks = subparsers.add_parser("chunks", help="查看某篇文档的 chunks")
     p_chunks.add_argument("doc_id", type=int)
+    p_chunks.add_argument("--full", action="store_true", help="显示完整内容")
+    p_chunks.add_argument("--json", action="store_true", help="按 JSON 输出")
+    p_chunks.add_argument("--limit", type=int, default=None, help="限制展示数量")
 
     p_ask = subparsers.add_parser("ask", help="提问")
     p_ask.add_argument("question", type=str)
@@ -102,11 +200,16 @@ def main():
     elif args.command == "import-file":
         cmd_import_file(args.file_path)
     elif args.command == "list-docs":
-        cmd_list_docs()
+        cmd_list_docs(as_json=args.json)
     elif args.command == "index":
         cmd_index(args.doc_id, args.chunk_size, args.overlap)
     elif args.command == "chunks":
-        cmd_chunks(args.doc_id)
+        cmd_chunks(
+            args.doc_id,
+            full=args.full,
+            as_json=args.json,
+            limit=args.limit,
+        )
     elif args.command == "ask":
         cmd_ask(args.question, args.top_k)
     elif args.command == "summary":
