@@ -9,7 +9,16 @@ import requests
 from app.config import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_MAX_CONTEXT_TOKENS,
+    DEFAULT_NEAR_DUP_THRESHOLD,
+    DEFAULT_NEIGHBOR_RADIUS,
+    DEFAULT_PER_DOC_LIMIT,
+    DEFAULT_RETRIEVE_CANDIDATES,
+    DEFAULT_RERANK_CANDIDATES,
     DEFAULT_TOP_K,
+    HYBRID_WEIGHT_EMBEDDING,
+    HYBRID_WEIGHT_LEXICAL,
+    HYBRID_WEIGHT_METADATA,
     OLLAMA_BASE_URL,
     OLLAMA_EMBED_MODEL,
     OLLAMA_MODEL,
@@ -25,6 +34,28 @@ from app.db import (
 )
 from app.ingestion.pipeline import parse_document, parse_documents_from_folder
 from app.ingestion.schemas import ParsedDocument
+
+
+# =========================
+# 基础工具
+# =========================
+
+_STOPWORDS = {
+    "的", "了", "和", "与", "及", "或", "是", "在", "对", "把", "被", "将", "并",
+    "一个", "一种", "一些", "这个", "那个", "这些", "那些", "我们", "你们", "他们",
+    "如何", "怎么", "怎样", "为什么", "是否", "什么", "哪些", "哪个", "哪里", "多少",
+    "请问", "一下", "一下子", "一下儿", "一下吧", "一下呢", "一下吗",
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "by",
+    "what", "why", "how", "which", "where", "when", "is", "are", "was", "were",
+}
+
+QUESTION_HINTS = {
+    "definition": ["什么是", "是什么", "定义", "含义", "概念"],
+    "comparison": ["区别", "不同", "对比", "比较", "优缺点", "优点", "缺点"],
+    "howto": ["如何", "怎么", "步骤", "实现", "做法", "流程"],
+    "reason": ["为什么", "原因", "目的", "作用"],
+    "location": ["哪里", "哪一章", "哪一节", "哪一页", "提到"],
+}
 
 
 def _safe_json_loads(value: Any, default: Any):
@@ -82,6 +113,10 @@ def parsed_document_to_db_payload(doc: ParsedDocument) -> dict[str, Any]:
         "blocks": blocks,
     }
 
+
+# =========================
+# 导入
+# =========================
 
 def import_single_document(file_path: str, source_type: str = "upload") -> dict[str, Any]:
     parsed_doc = parse_document(file_path=file_path, source_type=source_type)
@@ -172,6 +207,10 @@ def import_documents(folder: str) -> dict[str, Any]:
     }
 
 
+# =========================
+# LLM / Embedding
+# =========================
+
 def summarize_text(text: str) -> str:
     url = f"{OLLAMA_BASE_URL}/api/chat"
     payload = {
@@ -199,6 +238,42 @@ def summarize_text(text: str) -> str:
     except KeyError as e:
         raise RuntimeError("Ollama 返回格式异常") from e
 
+
+def get_embedding(text: str) -> list[float]:
+    url = f"{OLLAMA_BASE_URL}/api/embeddings"
+    payload = {
+        "model": OLLAMA_EMBED_MODEL,
+        "prompt": text,
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=60)
+        response.raise_for_status()
+        data = response.json()
+        if "embedding" not in data:
+            raise RuntimeError("embedding 字段不存在")
+        return data["embedding"]
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"embedding 请求失败: {e}") from e
+
+
+def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
+    if not vec1 or not vec2 or len(vec1) != len(vec2):
+        return -1.0
+
+    dot = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+
+    if norm1 == 0 or norm2 == 0:
+        return -1.0
+
+    return dot / (norm1 * norm2)
+
+
+# =========================
+# Chunk 基础
+# =========================
 
 def split_text(
     text: str,
@@ -254,7 +329,6 @@ def estimate_token_count(text: str) -> int:
     粗略 token 估算：
     - 中文按字符近似
     - 英文按词近似
-    目标不是精确计数，而是让 chunk 大小更稳定。
     """
     if not text:
         return 0
@@ -292,7 +366,7 @@ def normalize_block(block: dict[str, Any], fallback_order: int = 0) -> dict[str,
     text = (block.get("text") or "").strip()
     metadata = block.get("metadata") or {}
 
-    block_type = (block.get("block_type") or "paragraph").strip().lower()
+    block_type = (block.get("block_type") or block.get("type") or "paragraph").strip().lower()
     if block_type in {"title", "header", "subtitle"}:
         block_type = "heading"
     elif block_type in {"list", "listitem", "bullet"}:
@@ -304,13 +378,16 @@ def normalize_block(block: dict[str, Any], fallback_order: int = 0) -> dict[str,
         or metadata.get("section_titles")
     )
 
+    order = block.get("order", block.get("block_index", fallback_order))
+    page_num = block.get("page_num", block.get("page"))
+
     return {
         "block_id": block.get("block_id") or f"block_{fallback_order}",
         "block_type": block_type,
         "text": text,
-        "order": block.get("order", fallback_order),
-        "page_num": block.get("page_num"),
-        "level": block.get("level"),
+        "order": order,
+        "page_num": page_num,
+        "level": block.get("level", block.get("heading_level")),
         "section_path": section_path,
         "metadata": metadata,
     }
@@ -356,7 +433,7 @@ def group_table_rows(table_text: str, max_chars: int) -> list[str]:
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) <= 1:
-        return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+        return [text[i: i + max_chars] for i in range(0, len(text), max_chars)]
 
     header = lines[0]
     rows = lines[1:]
@@ -483,19 +560,20 @@ def split_long_text_by_sentences(text: str, max_tokens: int) -> list[str]:
     if estimate_token_count(text) <= max_tokens:
         return [text]
 
-    # 先按句子切
     pieces = re.split(r"(?<=[。！？!?；;])\s+|(?<=\.)\s+(?=[A-Z])", text)
     pieces = [p.strip() for p in pieces if p.strip()]
 
-    # 如果仍然没切开，就按换行/逗号辅助
     if len(pieces) <= 1:
         pieces = re.split(r"\n+|(?<=[，,])", text)
         pieces = [p.strip() for p in pieces if p.strip()]
 
-    # 还是太粗，就按字符兜底
     if len(pieces) <= 1:
         approx_chars = max(150, max_tokens * 2)
-        return [text[i : i + approx_chars].strip() for i in range(0, len(text), approx_chars) if text[i : i + approx_chars].strip()]
+        return [
+            text[i: i + approx_chars].strip()
+            for i in range(0, len(text), approx_chars)
+            if text[i: i + approx_chars].strip()
+        ]
 
     result: list[str] = []
     current = ""
@@ -512,7 +590,7 @@ def split_long_text_by_sentences(text: str, max_tokens: int) -> list[str]:
             else:
                 approx_chars = max(150, max_tokens * 2)
                 for i in range(0, len(piece), approx_chars):
-                    sub = piece[i : i + approx_chars].strip()
+                    sub = piece[i: i + approx_chars].strip()
                     if sub:
                         result.append(sub)
                 current = ""
@@ -527,11 +605,6 @@ def expand_blocks_for_chunking(
     blocks: list[dict[str, Any]],
     max_tokens: int,
 ) -> list[dict[str, Any]]:
-    """
-    对原始 block 做轻量预处理：
-    - 超长 paragraph/list/code 二次拆分
-    - 保留 heading/table 原样
-    """
     expanded: list[dict[str, Any]] = []
 
     for block in blocks:
@@ -568,10 +641,6 @@ def expand_blocks_for_chunking(
 
 
 def choose_overlap_blocks(blocks: list[dict[str, Any]], overlap: int) -> list[dict[str, Any]]:
-    """
-    按 block 级别选择回带内容，而不是按字符截断。
-    overlap 仍然复用原参数，但这里按“近似 token”理解。
-    """
     if overlap <= 0 or not blocks:
         return []
 
@@ -585,7 +654,6 @@ def choose_overlap_blocks(blocks: list[dict[str, Any]], overlap: int) -> list[di
 
         tokens = estimate_token_count(text)
 
-        # heading 不重复正文，只允许作为 section 信息存在
         if block.get("block_type") == "heading":
             continue
 
@@ -626,16 +694,6 @@ def split_blocks_into_chunks(
     max_tokens: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[dict[str, Any]]:
-    """
-    基于 blocks 的增强版 chunk 切分。
-
-    优化点：
-    1. heading 不直接成 chunk，而是更新 section_path
-    2. 过短过渡块尽量挂到后续正文，避免单独污染检索
-    3. 超长 paragraph/list/code 先做 block 内二次切分
-    4. table 独立切分
-    5. overlap 改成按 block 回带，而不是机械字符重叠
-    """
     if not blocks:
         return []
 
@@ -712,10 +770,8 @@ def split_blocks_into_chunks(
             pending_transition_blocks = []
             continue
 
-        # 短过渡块先缓存，等后面的正文/列表一起拼
         if block_type in {"paragraph", "list_item"} and is_transition_block(text):
             if current_blocks:
-                # 如果当前 chunk 已经有内容，过渡句直接跟进去，避免丢锚点
                 if current_token_count() + token_count <= max_tokens:
                     current_blocks.append(block)
                     continue
@@ -724,7 +780,6 @@ def split_blocks_into_chunks(
             pending_transition_blocks.append(block)
             continue
 
-        # section 变化时先收束当前 chunk
         if current_blocks and section_path != current_section:
             flush_current()
             current_section = section_path
@@ -738,7 +793,6 @@ def split_blocks_into_chunks(
                     current_blocks.extend(candidate)
                     pending_transition_blocks = []
                 else:
-                    # transition 太多时，保留最后一个最接近当前内容的
                     tail = pending_transition_blocks[-1:]
                     current_blocks.extend(tail + [block])
                     pending_transition_blocks = []
@@ -746,7 +800,6 @@ def split_blocks_into_chunks(
                 current_blocks.append(block)
             continue
 
-        # 列表组尽量保持完整：list_item 遇到 list_item 时更宽松一些
         allow_soft_overrun = (
             current_blocks
             and current_blocks[-1].get("block_type") == "list_item"
@@ -761,7 +814,6 @@ def split_blocks_into_chunks(
             flush_current()
             current_blocks = list(prev_tail)
 
-            # overlap 可能把上一个 section 的尾巴带过来，这里保持当前 section
             current_section = section_path
 
             if pending_transition_blocks:
@@ -787,7 +839,6 @@ def split_blocks_into_chunks(
 
             current_blocks.append(block)
 
-    # 文末如果还残留 transition，挂到当前 chunk；否则自己成一个小块
     if pending_transition_blocks:
         if current_blocks:
             current_blocks.extend(pending_transition_blocks)
@@ -798,37 +849,9 @@ def split_blocks_into_chunks(
     return chunks
 
 
-def get_embedding(text: str) -> list[float]:
-    url = f"{OLLAMA_BASE_URL}/api/embeddings"
-    payload = {
-        "model": OLLAMA_EMBED_MODEL,
-        "prompt": text,
-    }
-
-    try:
-        response = requests.post(url, json=payload, timeout=60)
-        response.raise_for_status()
-        data = response.json()
-        if "embedding" not in data:
-            raise RuntimeError("embedding 字段不存在")
-        return data["embedding"]
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"embedding 请求失败: {e}") from e
-
-
-def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
-    if not vec1 or not vec2 or len(vec1) != len(vec2):
-        return -1.0
-
-    dot = sum(a * b for a, b in zip(vec1, vec2))
-    norm1 = math.sqrt(sum(a * a for a in vec1))
-    norm2 = math.sqrt(sum(b * b for b in vec2))
-
-    if norm1 == 0 or norm2 == 0:
-        return -1.0
-
-    return dot / (norm1 * norm2)
-
+# =========================
+# 索引
+# =========================
 
 def index_document(
     doc_id: int,
@@ -899,33 +922,454 @@ def index_document(
     }
 
 
-def retrieve_chunks(query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]:
+# =========================
+# 检索增强
+# =========================
+
+def normalize_text_for_search(text: str) -> str:
+    text = (text or "").strip().lower()
+    text = re.sub(r"[^\w\u4e00-\u9fff]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def extract_query_terms(query: str) -> list[str]:
+    text = normalize_text_for_search(query)
+    if not text:
+        return []
+
+    raw_terms = re.findall(r"[\u4e00-\u9fff]{1,}|[a-zA-Z0-9_#+.\-]{2,}", text)
+    terms: list[str] = []
+
+    for term in raw_terms:
+        t = term.strip().lower()
+        if not t:
+            continue
+        if t in _STOPWORDS:
+            continue
+        if len(t) == 1 and not re.search(r"[\u4e00-\u9fff]", t):
+            continue
+        terms.append(t)
+
+    unique_terms = []
+    seen = set()
+    for term in sorted(terms, key=len, reverse=True):
+        if term not in seen:
+            unique_terms.append(term)
+            seen.add(term)
+
+    return unique_terms
+
+
+def infer_question_type(query: str) -> str:
+    q = query.strip()
+    for qtype, hints in QUESTION_HINTS.items():
+        if any(h in q for h in hints):
+            return qtype
+    return "general"
+
+
+def lexical_match_score(query_terms: list[str], text: str) -> float:
+    if not query_terms:
+        return 0.0
+
+    norm_text = normalize_text_for_search(text)
+    if not norm_text:
+        return 0.0
+
+    total = 0.0
+    matched = 0
+
+    for term in query_terms:
+        if term in norm_text:
+            matched += 1
+            total += min(2.0, 0.6 + len(term) * 0.12)
+
+    coverage = matched / max(1, len(query_terms))
+    return min(1.0, (total / max(1, len(query_terms) * 1.6)) * 0.7 + coverage * 0.3)
+
+
+def metadata_match_score(query_terms: list[str], chunk: dict[str, Any]) -> float:
+    title = chunk.get("document_title") or chunk.get("title") or ""
+    section_title = chunk.get("section_title") or ""
+    section_path = " ".join(chunk.get("section_path") or [])
+    chunk_type = chunk.get("chunk_type") or ""
+
+    title_score = lexical_match_score(query_terms, title)
+    section_score = lexical_match_score(query_terms, f"{section_title} {section_path}")
+
+    bonus = 0.0
+    if any(term in {"表", "表格", "table"} for term in query_terms) and chunk_type == "table":
+        bonus += 0.2
+    if any(term in {"代码", "code"} for term in query_terms) and chunk_type == "code":
+        bonus += 0.2
+    if any(term in {"定义", "概念", "是什么"} for term in query_terms):
+        if "定义" in section_title or "概念" in section_title:
+            bonus += 0.15
+
+    return min(1.0, title_score * 0.55 + section_score * 0.45 + bonus)
+
+
+def normalize_embedding_score(score: float) -> float:
+    score = max(-1.0, min(1.0, score))
+    return (score + 1) / 2
+
+
+def compute_hybrid_score(
+    query: str,
+    query_terms: list[str],
+    chunk: dict[str, Any],
+    embedding_score: float,
+) -> dict[str, float]:
+    chunk_text = chunk.get("chunk_text") or ""
+    lexical_score = lexical_match_score(query_terms, chunk_text)
+    meta_score = metadata_match_score(query_terms, chunk)
+    emb_score = normalize_embedding_score(embedding_score)
+
+    qtype = infer_question_type(query)
+
+    weight_embedding = HYBRID_WEIGHT_EMBEDDING
+    weight_lexical = HYBRID_WEIGHT_LEXICAL
+    weight_metadata = HYBRID_WEIGHT_METADATA
+
+    if qtype == "definition":
+        weight_embedding, weight_lexical, weight_metadata = 0.42, 0.28, 0.30
+    elif qtype == "comparison":
+        weight_embedding, weight_lexical, weight_metadata = 0.50, 0.30, 0.20
+    elif qtype == "howto":
+        weight_embedding, weight_lexical, weight_metadata = 0.52, 0.30, 0.18
+    elif qtype == "location":
+        weight_embedding, weight_lexical, weight_metadata = 0.32, 0.28, 0.40
+
+    final_score = (
+        emb_score * weight_embedding
+        + lexical_score * weight_lexical
+        + meta_score * weight_metadata
+    )
+
+    return {
+        "embedding_score": round(emb_score, 6),
+        "lexical_score": round(lexical_score, 6),
+        "metadata_score": round(meta_score, 6),
+        "final_score": round(final_score, 6),
+    }
+
+
+def chunk_signature_text(chunk: dict[str, Any]) -> str:
+    text = chunk.get("chunk_text") or ""
+    text = re.sub(r"文档标题：.*?\n", "", text)
+    text = re.sub(r"章节：.*?\n", "", text)
+    text = re.sub(r"内容类型：.*?\n", "", text)
+    return normalize_text_for_search(text)
+
+
+def text_jaccard_similarity(a: str, b: str) -> float:
+    sa = set(a.split())
+    sb = set(b.split())
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    union = len(sa | sb)
+    return inter / union if union else 0.0
+
+
+def deduplicate_and_diversify(
+    ranked_chunks: list[dict[str, Any]],
+    top_k: int,
+    per_doc_limit: int = DEFAULT_PER_DOC_LIMIT,
+    near_dup_threshold: float = DEFAULT_NEAR_DUP_THRESHOLD,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    doc_counts: dict[int, int] = {}
+
+    for chunk in ranked_chunks:
+        doc_id = chunk.get("document_id")
+        if doc_id is not None and doc_counts.get(doc_id, 0) >= per_doc_limit:
+            continue
+
+        signature = chunk_signature_text(chunk)
+        is_dup = False
+        for chosen in selected:
+            sim = text_jaccard_similarity(signature, chunk_signature_text(chosen))
+            same_doc = chosen.get("document_id") == doc_id
+            same_section = (chosen.get("section_path") or []) == (chunk.get("section_path") or [])
+            if sim >= near_dup_threshold or (same_doc and same_section and sim >= 0.65):
+                is_dup = True
+                break
+
+        if is_dup:
+            continue
+
+        selected.append(chunk)
+        if doc_id is not None:
+            doc_counts[doc_id] = doc_counts.get(doc_id, 0) + 1
+
+        if len(selected) >= top_k:
+            break
+
+    return selected
+
+
+def build_chunk_neighbors(
+    chunks: list[dict[str, Any]],
+) -> tuple[dict[int, dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+    by_id: dict[int, dict[str, Any]] = {}
+    by_doc: dict[int, list[dict[str, Any]]] = {}
+
+    for chunk in chunks:
+        chunk_id = chunk.get("id")
+        doc_id = chunk.get("document_id")
+        if chunk_id is not None:
+            by_id[chunk_id] = chunk
+        if doc_id is not None:
+            by_doc.setdefault(doc_id, []).append(chunk)
+
+    for doc_id, items in by_doc.items():
+        items.sort(
+            key=lambda x: (
+                x.get("block_start_order") if x.get("block_start_order") is not None else 10**9,
+                x.get("page_start") if x.get("page_start") is not None else 10**9,
+                x.get("id") if x.get("id") is not None else 10**9,
+            )
+        )
+
+    return by_id, by_doc
+
+
+def get_adjacent_chunks(
+    base_chunk: dict[str, Any],
+    by_doc: dict[int, list[dict[str, Any]]],
+    radius: int = DEFAULT_NEIGHBOR_RADIUS,
+) -> list[dict[str, Any]]:
+    doc_id = base_chunk.get("document_id")
+    if doc_id is None or doc_id not in by_doc:
+        return []
+
+    items = by_doc[doc_id]
+    target_id = base_chunk.get("id")
+    idx = None
+    for i, item in enumerate(items):
+        if item.get("id") == target_id:
+            idx = i
+            break
+
+    if idx is None:
+        return []
+
+    neighbors: list[dict[str, Any]] = []
+    for offset in range(1, radius + 1):
+        left = idx - offset
+        right = idx + offset
+        if left >= 0:
+            neighbors.append(items[left])
+        if right < len(items):
+            neighbors.append(items[right])
+    return neighbors
+
+
+def rerank_chunks(
+    query: str,
+    query_terms: list[str],
+    candidate_chunks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    reranked: list[dict[str, Any]] = []
+
+    for chunk in candidate_chunks:
+        emb_raw = chunk.get("_embedding_raw_score", chunk.get("score", -1.0))
+        score_info = compute_hybrid_score(
+            query=query,
+            query_terms=query_terms,
+            chunk=chunk,
+            embedding_score=emb_raw,
+        )
+        reranked.append(
+            {
+                **chunk,
+                "score": score_info["final_score"],
+                "embedding_score": score_info["embedding_score"],
+                "lexical_score": score_info["lexical_score"],
+                "metadata_score": score_info["metadata_score"],
+            }
+        )
+
+    reranked.sort(
+        key=lambda x: (
+            x["score"],
+            x.get("metadata_score", 0),
+            x.get("lexical_score", 0),
+            x.get("embedding_score", 0),
+        ),
+        reverse=True,
+    )
+    return reranked
+
+
+def retrieve_chunks(
+    query: str,
+    top_k: int = DEFAULT_TOP_K,
+) -> list[dict[str, Any]]:
+    """
+    增强版检索：
+    1. query embedding
+    2. 对所有 chunks 做向量粗排
+    3. 用关键词/标题/章节信息做规则重排
+    4. 去重与多样性控制
+    """
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    query_terms = extract_query_terms(query)
     query_embedding = get_embedding(query)
     all_chunks = get_all_chunks()
-    scored: list[dict[str, Any]] = []
+    if not all_chunks:
+        return []
 
+    pre_candidates: list[dict[str, Any]] = []
     for chunk in all_chunks:
         emb = chunk.get("embedding")
         if not emb:
             continue
 
-        score = cosine_similarity(query_embedding, emb)
-        scored.append(
+        raw_score = cosine_similarity(query_embedding, emb)
+        pre_candidates.append(
             {
                 **chunk,
-                "score": score,
+                "_embedding_raw_score": raw_score,
+                "score": raw_score,
             }
         )
 
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored[:top_k]
+    if not pre_candidates:
+        return []
 
+    pre_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+    coarse_k = min(
+        max(top_k * 8, DEFAULT_RETRIEVE_CANDIDATES),
+        len(pre_candidates),
+    )
+    coarse_candidates = pre_candidates[:coarse_k]
+
+    doc_best_scores: dict[int, float] = {}
+    for item in coarse_candidates:
+        doc_id = item.get("document_id")
+        if doc_id is None:
+            continue
+        doc_best_scores[doc_id] = max(
+            doc_best_scores.get(doc_id, -1.0),
+            item["_embedding_raw_score"],
+        )
+
+    top_doc_ids = {
+        doc_id
+        for doc_id, _ in sorted(
+            doc_best_scores.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )[: max(3, top_k)]
+    }
+
+    stage2_candidates = [
+        item for item in coarse_candidates
+        if item.get("document_id") in top_doc_ids
+        or item["_embedding_raw_score"] >= coarse_candidates[-1]["_embedding_raw_score"]
+    ]
+
+    rerank_limit = min(len(stage2_candidates), max(DEFAULT_RERANK_CANDIDATES, top_k * 4))
+    reranked = rerank_chunks(
+        query=query,
+        query_terms=query_terms,
+        candidate_chunks=stage2_candidates[:rerank_limit],
+    )
+
+    selected = deduplicate_and_diversify(
+        ranked_chunks=reranked,
+        top_k=top_k,
+        per_doc_limit=DEFAULT_PER_DOC_LIMIT,
+        near_dup_threshold=DEFAULT_NEAR_DUP_THRESHOLD,
+    )
+    return selected
+
+
+def assemble_context(
+    query: str,
+    primary_chunks: list[dict[str, Any]],
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+    neighbor_radius: int = DEFAULT_NEIGHBOR_RADIUS,
+) -> tuple[str, list[dict[str, Any]]]:
+    """
+    组装最终上下文：
+    - 先放主命中 chunks
+    - 再适度补相邻 chunks
+    - 控制上下文长度
+    """
+    if not primary_chunks:
+        return "", []
+
+    all_chunks = get_all_chunks()
+    _, by_doc = build_chunk_neighbors(all_chunks)
+
+    selected: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    total_tokens = 0
+
+    def try_add(chunk: dict[str, Any], source_role: str):
+        nonlocal total_tokens
+        chunk_id = chunk.get("id")
+        if chunk_id is None or chunk_id in seen_ids:
+            return False
+
+        chunk_tokens = chunk.get("token_count") or estimate_token_count(chunk.get("chunk_text", ""))
+        if selected and total_tokens + chunk_tokens > max_context_tokens:
+            return False
+
+        item = dict(chunk)
+        item["source_role"] = source_role
+        selected.append(item)
+        seen_ids.add(chunk_id)
+        total_tokens += chunk_tokens
+        return True
+
+    for chunk in primary_chunks:
+        try_add(chunk, "primary")
+
+    for chunk in primary_chunks:
+        neighbors = get_adjacent_chunks(chunk, by_doc=by_doc, radius=neighbor_radius)
+        neighbors.sort(
+            key=lambda x: (
+                0 if (x.get("section_path") or []) == (chunk.get("section_path") or []) else 1,
+                abs((x.get("block_start_order") or 0) - (chunk.get("block_start_order") or 0)),
+            )
+        )
+        for nb in neighbors:
+            if total_tokens >= max_context_tokens:
+                break
+            try_add(nb, "neighbor")
+
+    context_parts = []
+    for idx, item in enumerate(selected, start=1):
+        context_parts.append(
+            f"[片段{idx} | 来源={item.get('source_role')} | 分数={item.get('score', 0):.4f}]\n{item.get('chunk_text', '')}"
+        )
+
+    return "\n\n".join(context_parts), selected
+
+
+# =========================
+# 问答
+# =========================
 
 def answer_question(query: str, top_k: int = DEFAULT_TOP_K) -> dict[str, Any]:
     retrieved = retrieve_chunks(query=query, top_k=top_k)
-    context = "\n\n".join(item["chunk_text"] for item in retrieved)
-    url = f"{OLLAMA_BASE_URL}/api/chat"
+    context, used_chunks = assemble_context(
+        query=query,
+        primary_chunks=retrieved,
+        max_context_tokens=DEFAULT_MAX_CONTEXT_TOKENS,
+        neighbor_radius=DEFAULT_NEIGHBOR_RADIUS,
+    )
 
+    url = f"{OLLAMA_BASE_URL}/api/chat"
     payload = {
         "model": OLLAMA_MODEL,
         "messages": [
@@ -934,6 +1378,7 @@ def answer_question(query: str, top_k: int = DEFAULT_TOP_K) -> dict[str, Any]:
                 "content": (
                     "你是一个基于知识库回答问题的助手。"
                     "请严格依据提供的上下文作答；"
+                    "优先给出准确、直接、可验证的回答；"
                     "如果上下文不足，请明确说明“知识库中没有足够信息”。"
                 ),
             },
@@ -962,18 +1407,28 @@ def answer_question(query: str, top_k: int = DEFAULT_TOP_K) -> dict[str, Any]:
             {
                 "document_id": item["document_id"],
                 "chunk_id": item["id"],
-                "score": item["score"],
+                "score": item.get("score"),
+                "embedding_score": item.get("embedding_score"),
+                "lexical_score": item.get("lexical_score"),
+                "metadata_score": item.get("metadata_score"),
+                "source_role": item.get("source_role", "primary"),
                 "chunk_type": item.get("chunk_type"),
                 "section_title": item.get("section_title"),
                 "section_path": item.get("section_path", []),
                 "page_start": item.get("page_start"),
                 "page_end": item.get("page_end"),
-                "preview": item["chunk_text"][:200],
+                "preview": (item.get("chunk_text") or "")[:220],
             }
-            for item in retrieved
+            for item in used_chunks
         ],
+        "retrieved_count": len(retrieved),
+        "used_count": len(used_chunks),
     }
 
+
+# =========================
+# 查询接口
+# =========================
 
 def list_documents() -> list[dict[str, Any]]:
     rows = get_all_documents()
