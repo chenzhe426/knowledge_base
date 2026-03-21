@@ -14,17 +14,55 @@ def _cfg(name: str, default: Any):
 OLLAMA_BASE_URL = _cfg("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = _cfg("OLLAMA_MODEL", "qwen2.5:7b")
 OLLAMA_EMBED_MODEL = _cfg("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-
 REQUEST_TIMEOUT = int(_cfg("OLLAMA_TIMEOUT", 120))
 
 
-def _post_json(url: str, payload: dict[str, Any], timeout: int = REQUEST_TIMEOUT) -> dict[str, Any]:
+def _post_json(
+    url: str,
+    payload: dict[str, Any],
+    timeout: int = REQUEST_TIMEOUT,
+) -> dict[str, Any]:
     resp = requests.post(url, json=payload, timeout=timeout)
     resp.raise_for_status()
+
     data = resp.json()
     if not isinstance(data, dict):
         raise ValueError("invalid json response")
     return data
+
+
+def _extract_chat_content(data: dict[str, Any]) -> str:
+    """
+    兼容 Ollama /api/chat 和部分兼容返回格式
+    """
+    message = data.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+    response = data.get("response")
+    if isinstance(response, str) and response.strip():
+        return response.strip()
+
+    return ""
+
+
+def _extract_generate_content(data: dict[str, Any]) -> str:
+    """
+    兼容 Ollama /api/generate 返回格式
+    """
+    response = data.get("response")
+    if isinstance(response, str) and response.strip():
+        return response.strip()
+
+    message = data.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+    return ""
 
 
 def get_embedding(text: str) -> list[float]:
@@ -32,10 +70,12 @@ def get_embedding(text: str) -> list[float]:
     if not text:
         return []
 
+    base_url = OLLAMA_BASE_URL.rstrip("/")
+
     # 优先兼容 /api/embeddings
     try:
         data = _post_json(
-            f"{OLLAMA_BASE_URL.rstrip('/')}/api/embeddings",
+            f"{base_url}/api/embeddings",
             {
                 "model": OLLAMA_EMBED_MODEL,
                 "prompt": text,
@@ -50,17 +90,19 @@ def get_embedding(text: str) -> list[float]:
     # 回退兼容 /api/embed
     try:
         data = _post_json(
-            f"{OLLAMA_BASE_URL.rstrip('/')}/api/embed",
+            f"{base_url}/api/embed",
             {
                 "model": OLLAMA_EMBED_MODEL,
                 "input": text,
             },
         )
+
         embeddings = data.get("embeddings")
         if isinstance(embeddings, list) and embeddings:
             first = embeddings[0]
             if isinstance(first, list):
                 return first
+
         embedding = data.get("embedding")
         if isinstance(embedding, list):
             return embedding
@@ -68,57 +110,6 @@ def get_embedding(text: str) -> list[float]:
         pass
 
     return []
-
-
-def chat_completion(system_prompt: str, user_prompt: str) -> str:
-    system_prompt = normalize_whitespace(system_prompt or "")
-    user_prompt = normalize_whitespace(user_prompt or "")
-
-    if not user_prompt:
-        return ""
-
-    # 优先兼容 /api/chat
-    try:
-        data = _post_json(
-            f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat",
-            {
-                "model": OLLAMA_MODEL,
-                "stream": False,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            },
-        )
-
-        message = data.get("message") or {}
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
-
-        if isinstance(data.get("response"), str) and data["response"].strip():
-            return data["response"].strip()
-    except Exception:
-        pass
-
-    # 回退兼容 /api/generate
-    try:
-        prompt = user_prompt if not system_prompt else f"{system_prompt}\n\n{user_prompt}"
-        data = _post_json(
-            f"{OLLAMA_BASE_URL.rstrip('/')}/api/generate",
-            {
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-            },
-        )
-        response = data.get("response")
-        if isinstance(response, str):
-            return response.strip()
-    except Exception as e:
-        raise RuntimeError(f"llm request failed: {e}") from e
-
-    return ""
 
 
 def summarize_text(text: str) -> str:
@@ -141,8 +132,17 @@ def summarize_text(text: str) -> str:
 
 
 def chat_completion(system_prompt: str, user_prompt: str) -> str:
+    """
+    对外统一接口：
+    chat_completion(system_prompt=..., user_prompt=...)
+    """
     system_text = normalize_whitespace(system_prompt or "")
     user_text = normalize_whitespace(user_prompt or "")
+
+    if not system_text and not user_text:
+        return ""
+
+    base_url = OLLAMA_BASE_URL.rstrip("/")
 
     messages: list[dict[str, str]] = []
     if system_text:
@@ -150,29 +150,44 @@ def chat_completion(system_prompt: str, user_prompt: str) -> str:
     if user_text:
         messages.append({"role": "user", "content": user_text})
 
-    if not messages:
-        return ""
-
+    # 优先走 /api/chat
     try:
         data = _post_json(
-            f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat",
+            f"{base_url}/api/chat",
             {
                 "model": OLLAMA_MODEL,
                 "stream": False,
                 "messages": messages,
             },
         )
+        content = _extract_chat_content(data)
+        if content:
+            return content
+    except Exception:
+        pass
 
-        message = data.get("message") or {}
-        content = message.get("content")
-        if isinstance(content, str) and content.strip():
-            return content.strip()
+    # 回退 /api/generate
+    try:
+        prompt_parts: list[str] = []
+        if system_text:
+            prompt_parts.append(f"系统指令：\n{system_text}")
+        if user_text:
+            prompt_parts.append(f"用户问题：\n{user_text}")
 
-        response = data.get("response")
-        if isinstance(response, str) and response.strip():
-            return response.strip()
+        prompt = "\n\n".join(prompt_parts).strip()
+
+        data = _post_json(
+            f"{base_url}/api/generate",
+            {
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+            },
+        )
+        content = _extract_generate_content(data)
+        if content:
+            return content
 
         return ""
-
     except Exception as e:
         raise RuntimeError(f"llm request failed: {e}") from e
