@@ -1,63 +1,165 @@
+import json
 from typing import Any
 
 import requests
 
-from app.config import OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL, OLLAMA_MODEL
+import app.config as config
+from app.services.common import normalize_whitespace
 
 
-def _ollama_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    url = f"{OLLAMA_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
-    resp = requests.post(url, json=payload, timeout=120)
+def _cfg(name: str, default: Any):
+    return getattr(config, name, default)
+
+
+OLLAMA_BASE_URL = _cfg("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+OLLAMA_MODEL = _cfg("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_EMBED_MODEL = _cfg("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+REQUEST_TIMEOUT = int(_cfg("OLLAMA_TIMEOUT", 120))
+
+
+def _post_json(url: str, payload: dict[str, Any], timeout: int = REQUEST_TIMEOUT) -> dict[str, Any]:
+    resp = requests.post(url, json=payload, timeout=timeout)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("invalid json response")
+    return data
 
 
 def get_embedding(text: str) -> list[float]:
-    text = (text or "").strip()
+    text = normalize_whitespace(text or "")
     if not text:
         return []
 
+    # 优先兼容 /api/embeddings
     try:
-        data = _ollama_post(
-            "/api/embeddings",
-            {"model": OLLAMA_EMBED_MODEL, "prompt": text},
+        data = _post_json(
+            f"{OLLAMA_BASE_URL.rstrip('/')}/api/embeddings",
+            {
+                "model": OLLAMA_EMBED_MODEL,
+                "prompt": text,
+            },
         )
-        emb = data.get("embedding") or []
-        return [float(x) for x in emb]
+        embedding = data.get("embedding")
+        if isinstance(embedding, list):
+            return embedding
     except Exception:
-        data = _ollama_post(
-            "/api/embed",
-            {"model": OLLAMA_EMBED_MODEL, "input": text},
+        pass
+
+    # 回退兼容 /api/embed
+    try:
+        data = _post_json(
+            f"{OLLAMA_BASE_URL.rstrip('/')}/api/embed",
+            {
+                "model": OLLAMA_EMBED_MODEL,
+                "input": text,
+            },
         )
-        emb_list = data.get("embeddings") or []
-        if emb_list and isinstance(emb_list, list):
-            return [float(x) for x in emb_list[0]]
-        return []
+        embeddings = data.get("embeddings")
+        if isinstance(embeddings, list) and embeddings:
+            first = embeddings[0]
+            if isinstance(first, list):
+                return first
+        embedding = data.get("embedding")
+        if isinstance(embedding, list):
+            return embedding
+    except Exception:
+        pass
+
+    return []
 
 
-def chat_completion(prompt: str, system: str | None = None) -> str:
-    final_prompt = prompt
-    if system:
-        final_prompt = f"{system.strip()}\n\n{prompt.strip()}"
+def chat_completion(system_prompt: str, user_prompt: str) -> str:
+    system_prompt = normalize_whitespace(system_prompt or "")
+    user_prompt = normalize_whitespace(user_prompt or "")
 
-    data = _ollama_post(
-        "/api/generate",
-        {
-            "model": OLLAMA_MODEL,
-            "prompt": final_prompt,
-            "stream": False,
-        },
-    )
-    return (data.get("response") or "").strip()
+    if not user_prompt:
+        return ""
+
+    # 优先兼容 /api/chat
+    try:
+        data = _post_json(
+            f"{OLLAMA_BASE_URL.rstrip('/')}/api/chat",
+            {
+                "model": OLLAMA_MODEL,
+                "stream": False,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            },
+        )
+
+        message = data.get("message") or {}
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+        if isinstance(data.get("response"), str) and data["response"].strip():
+            return data["response"].strip()
+    except Exception:
+        pass
+
+    # 回退兼容 /api/generate
+    try:
+        prompt = user_prompt if not system_prompt else f"{system_prompt}\n\n{user_prompt}"
+        data = _post_json(
+            f"{OLLAMA_BASE_URL.rstrip('/')}/api/generate",
+            {
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+            },
+        )
+        response = data.get("response")
+        if isinstance(response, str):
+            return response.strip()
+    except Exception as e:
+        raise RuntimeError(f"llm request failed: {e}") from e
+
+    return ""
 
 
 def summarize_text(text: str) -> str:
-    text = (text or "").strip()
+    text = normalize_whitespace(text or "")
     if not text:
-        return ""
+        return "没有可摘要的内容。"
 
-    prompt = (
-        "请用中文对下面内容做简洁摘要，保留核心信息，尽量条理清楚：\n\n"
-        f"{text}"
+    system_prompt = (
+        "你是一个擅长阅读文档并生成摘要的助手。"
+        "请基于给定内容输出中文摘要，尽量准确、简洁、结构清晰。"
     )
-    return chat_completion(prompt)
+    user_prompt = (
+        "请总结下面这段内容，输出：\n"
+        "1. 一段总体摘要\n"
+        "2. 3到5个关键点\n\n"
+        f"内容：\n{text}"
+    )
+
+    return chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
+
+
+def chat_completion_json(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    raw = chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
+    raw = (raw or "").strip()
+
+    if not raw:
+        return {}
+
+    fenced = raw
+    if "```" in raw:
+        import re
+
+        match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.S)
+        if match:
+            fenced = match.group(1).strip()
+
+    try:
+        data = json.loads(fenced)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    return {}

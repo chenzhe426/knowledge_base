@@ -1,140 +1,240 @@
-import inspect
-import json
+import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.config import DATA_DIR
-from app.db import get_all_documents, get_chunks_by_document_id, insert_document
+from app.db import get_chunks_by_document_id, get_all_documents, insert_document
 from app.ingestion.pipeline import parse_document, parse_documents_from_folder
-from app.ingestion.schemas import ParsedDocument
-from app.services.chunk_service import block_to_dict, build_blocks_from_content
-from app.services.common import ensure_list, safe_get, safe_json_loads
+from app.services.common import (
+    normalize_section_path,
+    normalize_whitespace,
+    safe_get,
+    safe_json_loads,
+)
 
 
-def _call_insert_document(payload: dict[str, Any]) -> Any:
-    sig = inspect.signature(insert_document)
-    accepted = set(sig.parameters.keys())
-    kwargs = {k: v for k, v in payload.items() if k in accepted}
-    try:
-        return insert_document(**kwargs)
-    except TypeError:
-        common_order = [
-            "title",
-            "content",
-            "source_path",
-            "file_type",
-            "metadata_json",
-            "blocks_json",
-        ]
-        args = [payload.get(k) for k in common_order if k in payload]
-        return insert_document(*args)
+def _hash_text(text: str) -> str:
+    return hashlib.md5((text or "").encode("utf-8")).hexdigest()
 
 
-def _parsed_document_to_payload(parsed: ParsedDocument | Any) -> dict[str, Any]:
-    title = safe_get(parsed, "title", "") or ""
-    content = safe_get(parsed, "content", "") or ""
-    source_path = safe_get(parsed, "source_path", "") or ""
-    file_type = safe_get(parsed, "file_type", "") or Path(source_path).suffix.lstrip(".").lower()
-    metadata = safe_get(parsed, "metadata", {}) or {}
-    blocks = safe_get(parsed, "blocks", None)
+def _normalize_tags(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [normalize_whitespace(str(x)) for x in value if normalize_whitespace(str(x))]
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return []
+        if "," in value:
+            return [normalize_whitespace(x) for x in value.split(",") if normalize_whitespace(x)]
+        return [normalize_whitespace(value)]
+    return [normalize_whitespace(str(value))]
 
-    if not blocks:
-        blocks = build_blocks_from_content(content)
 
-    blocks_dict = [block_to_dict(b) for b in ensure_list(blocks)]
+def _parse_datetime_like(value: Any):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
 
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%Y/%m/%d",
+            "%Y/%m/%d %H:%M:%S",
+        ):
+            try:
+                return datetime.strptime(value, fmt)
+            except Exception:
+                pass
+
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_block(block: Any) -> dict[str, Any]:
+    if isinstance(block, dict):
+        metadata = block.get("metadata") or {}
+        return {
+            "type": normalize_whitespace(str(block.get("type", "paragraph") or "paragraph")).lower(),
+            "text": normalize_whitespace(block.get("text", "")),
+            "section_path": normalize_section_path(block.get("section_path")),
+            "page_start": block.get("page_start", block.get("page")),
+            "page_end": block.get("page_end", block.get("page")),
+            "metadata": metadata,
+        }
+
+    metadata = getattr(block, "metadata", {}) or {}
     return {
-        "title": title or Path(source_path).stem or "Untitled",
-        "content": content,
-        "source_path": source_path,
-        "file_type": file_type,
-        "metadata_json": json.dumps(metadata, ensure_ascii=False),
-        "blocks_json": json.dumps(blocks_dict, ensure_ascii=False),
-        "blocks_count": len(blocks_dict),
-        "char_count": len(content or ""),
+        "type": normalize_whitespace(str(getattr(block, "type", "paragraph") or "paragraph")).lower(),
+        "text": normalize_whitespace(getattr(block, "text", "")),
+        "section_path": normalize_section_path(getattr(block, "section_path", [])),
+        "page_start": getattr(block, "page_start", getattr(block, "page", None)),
+        "page_end": getattr(block, "page_end", getattr(block, "page", None)),
+        "metadata": metadata,
     }
 
 
-def import_single_document(file_path: str | Path) -> dict[str, Any]:
-    parsed = parse_document(str(file_path))
-    payload = _parsed_document_to_payload(parsed)
-    inserted = _call_insert_document(payload)
+def _normalize_blocks(blocks: Any) -> list[dict[str, Any]]:
+    if not blocks:
+        return []
+    normalized = []
+    for block in blocks:
+        item = _normalize_block(block)
+        if item.get("text"):
+            normalized.append(item)
+    return normalized
 
-    doc_id = inserted if isinstance(inserted, int) else (
-        inserted.get("id") if isinstance(inserted, dict) else None
+
+def parsed_document_to_db_payload(parsed_doc: Any, source_path: str | None = None) -> dict[str, Any]:
+    title = normalize_whitespace(
+        safe_get(parsed_doc, "title")
+        or (Path(source_path).stem if source_path else "")
+        or "Untitled"
     )
+
+    content = normalize_whitespace(
+        safe_get(parsed_doc, "content")
+        or safe_get(parsed_doc, "raw_text")
+        or ""
+    )
+
+    raw_text = normalize_whitespace(
+        safe_get(parsed_doc, "raw_text")
+        or safe_get(parsed_doc, "content")
+        or ""
+    )
+
+    file_path = safe_get(parsed_doc, "source_path") or source_path
+    file_type = normalize_whitespace(safe_get(parsed_doc, "file_type") or "")
+    metadata = safe_get(parsed_doc, "metadata", {}) or {}
+    blocks = _normalize_blocks(safe_get(parsed_doc, "blocks") or [])
+
+    source_type = normalize_whitespace(
+        metadata.get("source_type")
+        or ("folder_import" if source_path and Path(source_path).exists() else "upload")
+    )
+
+    lang = normalize_whitespace(metadata.get("lang") or "")
+    author = normalize_whitespace(metadata.get("author") or "")
+    published_at = _parse_datetime_like(metadata.get("published_at"))
+    tags = _normalize_tags(metadata.get("tags"))
+
+    payload = {
+        "title": title,
+        "content": content,
+        "raw_text": raw_text,
+        "file_path": file_path,
+        "file_type": file_type,
+        "source_type": source_type or "upload",
+        "lang": lang or None,
+        "author": author or None,
+        "published_at": published_at,
+        "content_hash": _hash_text(content or raw_text),
+        "block_count": len(blocks),
+        "blocks_json": blocks,
+        "metadata_json": metadata,
+        "tags_json": tags,
+    }
+    return payload
+
+
+def import_single_document(file_path: str) -> dict[str, Any]:
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"file not found: {file_path}")
+    if not path.is_file():
+        raise ValueError(f"not a file: {file_path}")
+
+    parsed_doc = parse_document(str(path))
+    if not parsed_doc:
+        raise ValueError(f"failed to parse document: {file_path}")
+
+    payload = parsed_document_to_db_payload(parsed_doc, source_path=str(path))
+    doc_id = insert_document(**payload)
 
     return {
         "id": doc_id,
         "title": payload["title"],
-        "source_path": payload["source_path"],
+        "file_path": payload["file_path"],
         "file_type": payload["file_type"],
-        "char_count": payload["char_count"],
-        "blocks_count": payload["blocks_count"],
+        "source_type": payload["source_type"],
+        "lang": payload["lang"],
+        "author": payload["author"],
+        "block_count": payload["block_count"],
+        "metadata": payload["metadata_json"] or {},
+        "tags": payload["tags_json"] or [],
     }
 
 
-def import_documents(folder: str | Path = DATA_DIR) -> dict[str, Any]:
-    parsed_documents = parse_documents_from_folder(str(folder))
-    results = []
-    success = 0
-    failed = 0
+def import_documents(folder: str) -> list[dict[str, Any]]:
+    folder_path = Path(folder)
+    if not folder_path.exists():
+        raise FileNotFoundError(f"folder not found: {folder}")
+    if not folder_path.is_dir():
+        raise ValueError(f"not a folder: {folder}")
 
-    for item in parsed_documents:
-        try:
-            payload = _parsed_document_to_payload(item)
-            inserted = _call_insert_document(payload)
-            doc_id = inserted if isinstance(inserted, int) else (
-                inserted.get("id") if isinstance(inserted, dict) else None
-            )
-            results.append(
-                {
-                    "success": True,
-                    "id": doc_id,
-                    "title": payload["title"],
-                    "source_path": payload["source_path"],
-                    "file_type": payload["file_type"],
-                    "char_count": payload["char_count"],
-                    "blocks_count": payload["blocks_count"],
-                }
-            )
-            success += 1
-        except Exception as e:
-            failed += 1
-            results.append(
-                {
-                    "success": False,
-                    "source_path": safe_get(item, "source_path", ""),
-                    "error": str(e),
-                }
-            )
+    parsed_docs = parse_documents_from_folder(str(folder_path))
+    results: list[dict[str, Any]] = []
 
-    return {
-        "total": len(parsed_documents),
-        "success": success,
-        "failed": failed,
-        "items": results,
-    }
+    for parsed_doc in parsed_docs:
+        source_path = safe_get(parsed_doc, "source_path")
+        payload = parsed_document_to_db_payload(parsed_doc, source_path=source_path)
+        if not payload["content"] and not payload["raw_text"]:
+            continue
+
+        doc_id = insert_document(**payload)
+        results.append(
+            {
+                "id": doc_id,
+                "title": payload["title"],
+                "file_path": payload["file_path"],
+                "file_type": payload["file_type"],
+                "source_type": payload["source_type"],
+                "lang": payload["lang"],
+                "author": payload["author"],
+                "block_count": payload["block_count"],
+                "metadata": payload["metadata_json"] or {},
+                "tags": payload["tags_json"] or [],
+            }
+        )
+
+    return results
 
 
 def list_documents() -> list[dict[str, Any]]:
     rows = get_all_documents() or []
-    results = []
+    results: list[dict[str, Any]] = []
 
     for row in rows:
-        blocks = safe_json_loads(safe_get(row, "blocks_json"), default=[])
-        metadata = safe_json_loads(safe_get(row, "metadata_json"), default={})
-        content = safe_get(row, "content", "") or ""
+        blocks = safe_json_loads(row.get("blocks_json"), default=[]) or []
+        metadata = safe_json_loads(row.get("metadata_json"), default={}) or {}
+        tags = safe_json_loads(row.get("tags_json"), default=[]) or []
 
         results.append(
             {
-                "id": safe_get(row, "id"),
-                "title": safe_get(row, "title", ""),
-                "source_path": safe_get(row, "source_path", ""),
-                "file_type": safe_get(row, "file_type", ""),
-                "char_count": len(content),
-                "blocks_count": len(blocks) if isinstance(blocks, list) else 0,
+                "id": row.get("id"),
+                "title": row.get("title"),
+                "file_path": row.get("file_path"),
+                "file_type": row.get("file_type"),
+                "source_type": row.get("source_type"),
+                "lang": row.get("lang"),
+                "author": row.get("author"),
+                "published_at": row.get("published_at"),
+                "content_hash": row.get("content_hash"),
+                "block_count": row.get("block_count") or len(blocks),
                 "metadata": metadata,
+                "tags": tags,
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
             }
         )
 
@@ -143,23 +243,37 @@ def list_documents() -> list[dict[str, Any]]:
 
 def get_document_chunks(doc_id: int) -> list[dict[str, Any]]:
     rows = get_chunks_by_document_id(doc_id) or []
-    results = []
+    results: list[dict[str, Any]] = []
 
     for row in rows:
-        metadata = safe_json_loads(safe_get(row, "metadata_json"), default={})
+        metadata = safe_json_loads(row.get("metadata_json"), default={}) or {}
+        embedding = row.get("embedding")
+        if isinstance(embedding, str):
+            embedding = safe_json_loads(embedding, default=[])
+
         results.append(
             {
-                "id": safe_get(row, "id"),
-                "document_id": safe_get(row, "document_id"),
-                "chunk_index": safe_get(row, "chunk_index"),
-                "chunk_text": safe_get(row, "chunk_text", ""),
-                "chunk_type": safe_get(row, "chunk_type"),
-                "section_path": safe_get(row, "section_path", ""),
-                "page_start": safe_get(row, "page_start"),
-                "page_end": safe_get(row, "page_end"),
-                "block_start_index": safe_get(row, "block_start_index"),
-                "block_end_index": safe_get(row, "block_end_index"),
-                "metadata": metadata,
+                "id": row.get("id"),
+                "document_id": row.get("document_id"),
+                "chunk_index": row.get("chunk_index"),
+                "chunk_text": row.get("chunk_text"),
+                "search_text": row.get("search_text"),
+                "lexical_text": row.get("lexical_text"),
+                "embedding": embedding,
+                "chunk_type": row.get("chunk_type"),
+                "doc_title": row.get("doc_title"),
+                "section_title": row.get("section_title"),
+                "section_path": row.get("section_path"),
+                "page_start": row.get("page_start"),
+                "page_end": row.get("page_end"),
+                "block_start_index": row.get("block_start_index"),
+                "block_end_index": row.get("block_end_index"),
+                "token_count": row.get("token_count"),
+                "chunk_hash": row.get("chunk_hash"),
+                "metadata_json": metadata,
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
             }
         )
+
     return results

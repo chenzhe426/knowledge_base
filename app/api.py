@@ -1,13 +1,13 @@
-from __future__ import annotations
-
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE
 from app.db import init_db
 from app.models import (
     AskRequest,
     AskResponse,
-    GenericResponse,
+    ChatHistoryResponse,
+    ChatSessionCreateRequest,
+    ChatSessionResponse,
     ImportFileRequest,
     ImportFolderRequest,
     IndexRequest,
@@ -15,19 +15,28 @@ from app.models import (
 )
 from app.services import (
     answer_question,
-    get_document_chunks,
+    get_chat_history,
     import_documents,
     import_single_document,
     index_document,
-    list_documents,
-    summarize_text,
+    summarize_document,
+)
+from app.db import create_chat_session, get_chat_session
+
+
+app = FastAPI(
+    title="Knowledge Base API",
+    version="2.0.0",
+    description="Local RAG knowledge base with hybrid retrieval, structured output, highlighting, and chat context.",
 )
 
-app = FastAPI(title="knowledge_base", version="1.0.0")
-
-@app.get("/")
-def root():
-    return {"message": "knowledge_base api is running"}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
@@ -37,66 +46,116 @@ def startup_event():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"status": "ok"}
 
 
-@app.get("/documents", response_model=GenericResponse)
-def api_list_documents():
-    return GenericResponse(data=list_documents())
-
-
-@app.get("/documents/{doc_id}/chunks", response_model=GenericResponse)
-def api_get_document_chunks(doc_id: int):
-    try:
-        return GenericResponse(data=get_document_chunks(doc_id))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-
-@app.post("/import/folder", response_model=GenericResponse)
-def api_import_folder(req: ImportFolderRequest):
+@app.post("/import/folder")
+def import_folder(req: ImportFolderRequest):
     try:
         result = import_documents(req.folder)
-        return GenericResponse(data=result)
+        return {
+            "ok": True,
+            "count": len(result) if isinstance(result, list) else 0,
+            "documents": result,
+        }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/import/file", response_model=GenericResponse)
-def api_import_file(req: ImportFileRequest):
+@app.post("/import/file")
+def import_file(req: ImportFileRequest):
     try:
         result = import_single_document(req.file_path)
-        return GenericResponse(data=result)
+        return {
+            "ok": True,
+            "document": result,
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/index", response_model=GenericResponse)
-def api_index(req: IndexRequest):
+@app.post("/index")
+def build_index(req: IndexRequest):
     try:
         result = index_document(
             doc_id=req.doc_id,
-            chunk_size=req.chunk_size or DEFAULT_CHUNK_SIZE,
-            overlap=req.overlap or DEFAULT_CHUNK_OVERLAP,
+            chunk_size=req.chunk_size,
+            overlap=req.overlap,
         )
-        return GenericResponse(data=result)
+        return {
+            "ok": True,
+            **result,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/ask", response_model=AskResponse)
-def api_ask(req: AskRequest):
+def ask(req: AskRequest):
     try:
-        result = answer_question(req.question, top_k=req.top_k)
+        result = answer_question(
+            question=req.question,
+            top_k=req.top_k,
+            response_mode=req.response_mode,
+            highlight=req.highlight,
+            session_id=req.session_id,
+            use_chat_context=req.use_chat_context,
+        )
         return AskResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/summary", response_model=GenericResponse)
-def api_summary(req: SummaryRequest):
+@app.post("/summary")
+def summary(req: SummaryRequest):
     try:
-        result = summarize_text(req.text)
-        return GenericResponse(data={"summary": result})
+        result = summarize_document(req.doc_id)
+        return {
+            "ok": True,
+            **result,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/session", response_model=ChatSessionResponse)
+def create_session(req: ChatSessionCreateRequest):
+    try:
+        session_id = create_chat_session(
+            session_id=req.session_id,
+            title=req.title,
+            metadata_json=req.metadata,
+        )
+        session = get_chat_session(session_id)
+        if not session:
+            raise HTTPException(status_code=500, detail="failed to create session")
+
+        return ChatSessionResponse(
+            session_id=session.get("session_id"),
+            title=session.get("title"),
+            summary_text=session.get("summary_text"),
+            metadata=session.get("metadata_json") or {},
+            created_at=session.get("created_at"),
+            updated_at=session.get("updated_at"),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/chat/{session_id}", response_model=ChatHistoryResponse)
+def chat_history(session_id: str, limit: int = 20):
+    try:
+        result = get_chat_history(session_id=session_id, limit=limit)
+        return ChatHistoryResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
