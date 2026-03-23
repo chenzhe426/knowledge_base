@@ -5,7 +5,12 @@ import re
 from typing import Any
 
 from app.config import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE
-from app.db import clear_chunks_by_document_id, get_document_by_id, insert_chunk
+from app.db import (
+    clear_chunks_by_document_id,
+    ensure_chunk_search_indexes,
+    get_document_by_id,
+    insert_chunk,
+)
 from app.services.common import (
     last_section_title,
     normalize_section_path,
@@ -58,6 +63,73 @@ def _call_insert_chunk(payload: dict[str, Any]) -> Any:
         ]
         args = [payload.get(k) for k in common_order if k in payload]
         return insert_chunk(*args)
+
+
+def _maybe_delete_vector_index(document_id: int) -> None:
+    """
+    可选钩子：
+    如果未来新增 app.services.vector_store_service.delete_document_embeddings，
+    这里会自动调用；如果没有该模块，则静默跳过。
+    """
+    try:
+        from app.services.vector_store_service import delete_document_embeddings
+    except Exception:
+        return
+
+    try:
+        delete_document_embeddings(document_id)
+    except Exception:
+        # 不阻塞主索引流程
+        return
+
+
+def _maybe_upsert_vector_index(
+    *,
+    chunk_id: int | None,
+    document_id: int,
+    chunk_index: int,
+    embedding: list[float] | None,
+    chunk: dict[str, Any],
+) -> None:
+    """
+    可选钩子：
+    如果未来新增 app.services.vector_store_service.upsert_chunk_embedding，
+    这里会自动调用；如果没有该模块，则静默跳过。
+    """
+    if not embedding:
+        return
+
+    try:
+        from app.services.vector_store_service import upsert_chunk_embedding
+    except Exception:
+        return
+
+    payload = {
+        "chunk_id": chunk_id,
+        "document_id": document_id,
+        "chunk_index": chunk_index,
+        "doc_title": chunk.get("doc_title"),
+        "section_title": chunk.get("section_title"),
+        "section_path": section_path_to_str(chunk.get("section_path")),
+        "page_start": chunk.get("page_start"),
+        "page_end": chunk.get("page_end"),
+        "chunk_type": chunk.get("chunk_type"),
+        "token_count": chunk.get("token_count", 0),
+        "chunk_hash": chunk.get("chunk_hash"),
+        "search_text": chunk.get("search_text", ""),
+        "chunk_text": chunk.get("chunk_text", ""),
+        "metadata": chunk.get("metadata") or {},
+    }
+
+    try:
+        upsert_chunk_embedding(
+            chunk_id=chunk_id,
+            embedding=embedding,
+            payload=payload,
+        )
+    except Exception:
+        # 不阻塞主索引流程
+        return
 
 
 def _estimate_token_count(text: str) -> int:
@@ -713,10 +785,6 @@ def split_blocks_into_chunks(
 
 
 def _to_indexed_chunk_item(chunk_id: int | None, chunk_index: int, chunk: dict[str, Any]) -> dict[str, Any]:
-    """
-    统一 index_document 的 chunk 返回结构。
-    该结构应可被 IndexedChunkItem 直接接收。
-    """
     search_text = normalize_whitespace(chunk.get("search_text", ""))
 
     return {
@@ -750,7 +818,12 @@ def index_document(
     if not blocks:
         blocks = build_blocks_from_content(content)
 
+    # 确保检索侧全文索引已存在
+    ensure_chunk_search_indexes()
+
+    # 重建前同时清理数据库 chunk 与可选向量索引
     clear_chunks_by_document_id(document_id)
+    _maybe_delete_vector_index(document_id)
 
     chunks = split_blocks_into_chunks(
         doc_title=title,
@@ -783,7 +856,7 @@ def index_document(
             "lexical_text": lexical_text,
             "embedding": embedding,
             "chunk_index": idx,
-            "section_path": section_path_to_str(chunk.get("section_path")),
+            "section_path": chunk.get("section_path") or [],
             "page_start": chunk.get("page_start"),
             "page_end": chunk.get("page_end"),
             "block_start_index": chunk.get("block_start_index"),
@@ -799,6 +872,14 @@ def index_document(
         inserted = _call_insert_chunk(payload)
         chunk_id = inserted if isinstance(inserted, int) else (
             inserted.get("id") if isinstance(inserted, dict) else None
+        )
+
+        _maybe_upsert_vector_index(
+            chunk_id=chunk_id,
+            document_id=document_id,
+            chunk_index=idx,
+            embedding=embedding,
+            chunk=chunk,
         )
 
         saved_chunks.append(_to_indexed_chunk_item(chunk_id=chunk_id, chunk_index=idx, chunk=chunk))

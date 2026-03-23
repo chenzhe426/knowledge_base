@@ -1,6 +1,5 @@
-from app.db.bootstrap import init_db
+from app.db.bootstrap import init_db, reset_database
 from app.db.connection import get_connection, get_cursor
-
 from app.db.repositories.document_repository import (
     delete_document,
     get_all_documents,
@@ -9,16 +8,19 @@ from app.db.repositories.document_repository import (
     search_documents,
     update_document,
 )
-
 from app.db.repositories.chunk_repository import (
     clear_all_chunks,
     clear_chunks_by_document_id,
+    ensure_chunk_search_indexes,
     get_all_chunks,
     get_chunk_by_id,
     get_chunks_by_document_id,
+    get_chunks_by_ids,
+    get_neighbor_chunks,
     insert_chunk,
+    search_chunks_boolean,
+    search_chunks_fulltext,
 )
-
 from app.db.repositories.chat_repository import (
     create_chat_session,
     delete_chat_session,
@@ -31,6 +33,7 @@ from app.db.repositories.chat_repository import (
 
 __all__ = [
     "init_db",
+    "reset_database",
     "get_connection",
     "get_cursor",
     "insert_document",
@@ -42,7 +45,12 @@ __all__ = [
     "insert_chunk",
     "get_chunk_by_id",
     "get_chunks_by_document_id",
+    "get_chunks_by_ids",
     "get_all_chunks",
+    "search_chunks_fulltext",
+    "search_chunks_boolean",
+    "get_neighbor_chunks",
+    "ensure_chunk_search_indexes",
     "clear_chunks_by_document_id",
     "clear_all_chunks",
     "create_chat_session",

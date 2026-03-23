@@ -4,7 +4,12 @@ from collections import Counter, defaultdict
 from typing import Any
 
 import app.config as config
-from app.db import get_all_chunks, get_chunks_by_document_id
+from app.db import (
+    get_chunks_by_ids,
+    get_neighbor_chunks,
+    search_chunks_boolean,
+    search_chunks_fulltext,
+)
 from app.services.common import (
     normalize_embedding,
     normalize_whitespace,
@@ -26,8 +31,12 @@ def _cfg(name: str, default: Any):
 
 
 DEFAULT_TOP_K = _cfg("DEFAULT_TOP_K", 5)
-HYBRID_VECTOR_TOP_K = _cfg("HYBRID_VECTOR_TOP_K", 20)
-HYBRID_KEYWORD_TOP_K = _cfg("HYBRID_KEYWORD_TOP_K", 20)
+
+HYBRID_VECTOR_TOP_K = int(_cfg("HYBRID_VECTOR_TOP_K", 20))
+HYBRID_KEYWORD_TOP_K = int(_cfg("HYBRID_KEYWORD_TOP_K", 20))
+HYBRID_LEXICAL_FETCH_K = int(_cfg("HYBRID_LEXICAL_FETCH_K", 120))
+HYBRID_BOOLEAN_FETCH_K = int(_cfg("HYBRID_BOOLEAN_FETCH_K", 80))
+HYBRID_HYDRATE_TOP_K = int(_cfg("HYBRID_HYDRATE_TOP_K", 160))
 
 RETRIEVAL_WEIGHT_EMBEDDING = float(_cfg("RETRIEVAL_WEIGHT_EMBEDDING", 0.45))
 RETRIEVAL_WEIGHT_KEYWORD = float(_cfg("RETRIEVAL_WEIGHT_KEYWORD", 0.20))
@@ -47,10 +56,6 @@ RETRIEVAL_NEIGHBOR_WINDOW = int(_cfg("RETRIEVAL_NEIGHBOR_WINDOW", 1))
 
 QUERY_MIN_TERM_LEN = int(_cfg("QUERY_MIN_TERM_LEN", 2))
 QUERY_STOPWORDS = set(_cfg("QUERY_STOPWORDS", []))
-
-BM25_K1 = float(_cfg("BM25_K1", 1.5))
-BM25_B = float(_cfg("BM25_B", 0.75))
-BM25_MIN_SCORE = float(_cfg("BM25_MIN_SCORE", 0.01))
 
 
 def _contains_cjk(text: str) -> bool:
@@ -83,10 +88,8 @@ def _tokenize_text(text: str) -> list[str]:
         if not chunk:
             continue
 
-        # 保留整段中文串
         tokens.append(chunk)
 
-        # 同时切 ngram 提升中文术语召回
         if len(chunk) >= 2:
             for n in (2, 3, 4):
                 if len(chunk) >= n:
@@ -111,9 +114,22 @@ def _tokenize_query(text: str) -> list[str]:
 
     return filtered
 
+def _normalize_mixed_language_query(text: str) -> str:
+    text = normalize_whitespace(text or "")
+    if not text:
+        return ""
+
+    # 中文 -> 英文/数字 边界
+    text = re.sub(r"([\u4e00-\u9fff])([A-Za-z0-9]+)", r"\1 \2", text)
+    # 英文/数字 -> 中文 边界
+    text = re.sub(r"([A-Za-z0-9]+)([\u4e00-\u9fff])", r"\1 \2", text)
+    # 压缩空白
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
 
 def _normalize_query(query: str) -> dict[str, Any]:
-    normalized = normalize_whitespace(query)
+    normalized = _normalize_mixed_language_query(query)
     terms = _tokenize_query(normalized)
     unique_terms = list(dict.fromkeys(terms))
 
@@ -202,8 +218,17 @@ def _term_occurrence_detail(term: str, text: str) -> dict[str, Any]:
     }
 
 
+def _safe_section_path(value: Any) -> str:
+    if isinstance(value, list):
+        return " / ".join(str(x).strip() for x in value if str(x).strip())
+    if isinstance(value, dict):
+        return normalize_whitespace(" ".join(str(v) for v in value.values()))
+    return normalize_whitespace(str(value or ""))
+
+
 def _row_to_candidate(row: Any) -> dict[str, Any]:
     metadata = safe_json_loads(safe_get(row, "metadata_json"), default={}) or {}
+    raw_section_path = safe_get(row, "section_path", "")
 
     lexical_text = normalize_whitespace(
         safe_get(row, "lexical_text", "")
@@ -228,7 +253,7 @@ def _row_to_candidate(row: Any) -> dict[str, Any]:
             or safe_get(row, "title")
             or metadata.get("doc_title", "")
         ),
-        "section_path": normalize_whitespace(safe_get(row, "section_path", "")),
+        "section_path": _safe_section_path(raw_section_path),
         "section_title": normalize_whitespace(
             safe_get(row, "section_title")
             or metadata.get("section_title", "")
@@ -246,72 +271,12 @@ def _row_to_candidate(row: Any) -> dict[str, Any]:
         "section_match_score": 0.0,
         "coverage_score": 0.0,
         "matched_term_count": 0,
+        "lexical_db_score": to_float(safe_get(row, "lexical_score")),
         "final_score": 0.0,
         "term_hits": {},
         "term_hit_detail": {},
         "is_neighbor": False,
     }
-
-
-def _build_bm25_index(rows: list[Any]) -> dict[str, Any]:
-    documents: list[list[str]] = []
-    doc_freq: Counter[str] = Counter()
-    doc_lens: list[int] = []
-
-    for row in rows:
-        lexical_text = normalize_whitespace(
-            safe_get(row, "lexical_text", "")
-            or safe_get(row, "search_text", "")
-            or safe_get(row, "chunk_text", "")
-        )
-        tokens = _tokenize_text(_normalize_lexical_text(lexical_text))
-        documents.append(tokens)
-        doc_lens.append(len(tokens))
-
-        unique_terms = set(tokens)
-        for term in unique_terms:
-            doc_freq[term] += 1
-
-    avgdl = sum(doc_lens) / len(doc_lens) if doc_lens else 0.0
-
-    return {
-        "documents": documents,
-        "doc_freq": doc_freq,
-        "doc_lens": doc_lens,
-        "avgdl": avgdl,
-        "N": len(documents),
-    }
-
-
-def _bm25_idf(term: str, N: int, df: int) -> float:
-    if N <= 0:
-        return 0.0
-    return math.log(1 + (N - df + 0.5) / (df + 0.5))
-
-
-def _bm25_score(query_terms: list[str], doc_tokens: list[str], bm25_index: dict[str, Any]) -> float:
-    if not query_terms or not doc_tokens:
-        return 0.0
-
-    tf = Counter(doc_tokens)
-    doc_len = len(doc_tokens)
-    avgdl = bm25_index.get("avgdl", 0.0) or 0.0
-    N = int(bm25_index.get("N", 0))
-    df_map = bm25_index.get("doc_freq", {}) or {}
-
-    score = 0.0
-    for term in query_terms:
-        freq = tf.get(term, 0)
-        if freq <= 0:
-            continue
-
-        df = int(df_map.get(term, 0))
-        idf = _bm25_idf(term, N=N, df=df)
-        denom = freq + BM25_K1 * (1 - BM25_B + BM25_B * (doc_len / avgdl if avgdl > 0 else 0))
-        part = idf * ((freq * (BM25_K1 + 1)) / denom)
-        score += part
-
-    return score
 
 
 def _collect_row_texts(cand: dict[str, Any]) -> dict[str, str]:
@@ -378,78 +343,150 @@ def _compute_keyword_components(query_info: dict[str, Any], cand: dict[str, Any]
     }
 
 
-def _vector_recall(query_info: dict[str, Any], rows: list[Any], top_k: int) -> list[dict[str, Any]]:
+def _normalize_scores(items: list[dict[str, Any]], field: str) -> None:
+    max_score = max((to_float(item.get(field)) for item in items), default=0.0)
+    if max_score <= 0:
+        return
+    for item in items:
+        item[field] = to_float(item.get(field)) / max_score
+
+
+def _hydrate_candidates(raw_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not raw_hits:
+        return []
+
+    by_id: dict[int, dict[str, Any]] = {}
+    ordered_ids: list[int] = []
+
+    for item in raw_hits:
+        chunk_id = safe_get(item, "id")
+        if chunk_id is None:
+            chunk_id = safe_get(item, "chunk_id")
+        if chunk_id is None:
+            continue
+
+        chunk_id = int(chunk_id)
+        if chunk_id not in by_id:
+            by_id[chunk_id] = dict(item)
+            ordered_ids.append(chunk_id)
+        else:
+            existing = by_id[chunk_id]
+            existing["lexical_score"] = max(
+                to_float(existing.get("lexical_score")),
+                to_float(item.get("lexical_score")),
+            )
+
+    hydrated_rows = get_chunks_by_ids(ordered_ids) or []
+    row_map = {int(row["id"]): row for row in hydrated_rows if safe_get(row, "id") is not None}
+
+    results: list[dict[str, Any]] = []
+    for chunk_id in ordered_ids:
+        row = row_map.get(chunk_id)
+        if not row:
+            continue
+        cand = _row_to_candidate(row)
+        extra = by_id.get(chunk_id, {})
+        cand["lexical_db_score"] = max(
+            to_float(cand.get("lexical_db_score")),
+            to_float(extra.get("lexical_score")),
+        )
+        results.append(cand)
+
+    return results
+
+
+def _vector_recall_from_candidates(
+    query_info: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    top_k: int,
+) -> list[dict[str, Any]]:
     query_text = query_info.get("normalized_query", "")
-    if not query_text:
+    if not query_text or not candidates:
         return []
 
     query_embedding = get_embedding(query_text)
     if not query_embedding:
         return []
 
-    candidates: list[dict[str, Any]] = []
-    for row in rows:
-        cand = _row_to_candidate(row)
-        emb = cand.get("embedding") or []
-        cand["embedding_score"] = cosine_similarity(query_embedding, emb)
-        if cand["embedding_score"] > 0:
-            candidates.append(cand)
-
-    candidates.sort(key=lambda x: x.get("embedding_score", 0.0), reverse=True)
-    return candidates[:top_k]
-
-
-def _bm25_recall(query_info: dict[str, Any], rows: list[Any], top_k: int) -> list[dict[str, Any]]:
-    query_terms = query_info.get("important_terms") or query_info.get("unique_terms") or []
-    if not query_terms:
-        return []
-
-    bm25_index = _build_bm25_index(rows)
-    documents = bm25_index.get("documents", [])
-
     scored: list[dict[str, Any]] = []
-    max_score = 0.0
-
-    for idx, row in enumerate(rows):
-        doc_tokens = documents[idx] if idx < len(documents) else []
-        score = _bm25_score(query_terms, doc_tokens, bm25_index)
-        if score < BM25_MIN_SCORE:
+    for cand in candidates:
+        emb = cand.get("embedding") or []
+        if not emb:
             continue
 
-        cand = _row_to_candidate(row)
-        cand["bm25_score"] = score
-        scored.append(cand)
-        if score > max_score:
-            max_score = score
+        item = dict(cand)
+        item["embedding_score"] = cosine_similarity(query_embedding, emb)
+        if item["embedding_score"] > 0:
+            scored.append(item)
 
-    if max_score > 0:
-        for cand in scored:
-            cand["bm25_score"] = cand["bm25_score"] / max_score
-
-    scored.sort(key=lambda x: x.get("bm25_score", 0.0), reverse=True)
+    scored.sort(key=lambda x: x.get("embedding_score", 0.0), reverse=True)
     return scored[:top_k]
 
 
-def _keyword_recall(query_info: dict[str, Any], rows: list[Any], top_k: int) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
+def _keyword_recall_from_candidates(
+    query_info: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    top_k: int,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
 
-    for row in rows:
-        cand = _row_to_candidate(row)
-        parts = _compute_keyword_components(query_info, cand)
-        cand.update(parts)
-
+    for cand in candidates:
+        item = dict(cand)
+        item.update(_compute_keyword_components(query_info, item))
         lexical_score = (
-            0.60 * to_float(cand.get("keyword_score"))
-            + 0.23 * to_float(cand.get("title_match_score"))
-            + 0.17 * to_float(cand.get("section_match_score"))
+            0.60 * to_float(item.get("keyword_score"))
+            + 0.23 * to_float(item.get("title_match_score"))
+            + 0.17 * to_float(item.get("section_match_score"))
         )
-        cand["final_score"] = lexical_score
-
+        item["final_score"] = lexical_score
         if lexical_score > 0:
-            candidates.append(cand)
+            results.append(item)
 
-    candidates.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
-    return candidates[:top_k]
+    results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
+    return results[:top_k]
+
+
+def _lexical_recall_from_db(
+    query_info: dict[str, Any],
+    top_k: int,
+) -> list[dict[str, Any]]:
+    query_text = query_info.get("normalized_query", "")
+    if not query_text:
+        return []
+
+    natural_hits = search_chunks_fulltext(
+        query_text,
+        limit=max(top_k, HYBRID_LEXICAL_FETCH_K),
+    ) or []
+
+    boolean_hits = search_chunks_boolean(
+        query_text,
+        limit=max(top_k, HYBRID_BOOLEAN_FETCH_K),
+        require_all_terms=False,
+    ) or []
+
+    merged_raw: dict[int, dict[str, Any]] = {}
+    for row in [*natural_hits, *boolean_hits]:
+        chunk_id = safe_get(row, "id")
+        if chunk_id is None:
+            continue
+        chunk_id = int(chunk_id)
+        if chunk_id not in merged_raw:
+            merged_raw[chunk_id] = dict(row)
+        else:
+            merged_raw[chunk_id]["lexical_score"] = max(
+                to_float(merged_raw[chunk_id].get("lexical_score")),
+                to_float(row.get("lexical_score")),
+            )
+
+    hydrated = _hydrate_candidates(list(merged_raw.values()))
+    _normalize_scores(hydrated, "lexical_db_score")
+
+    for cand in hydrated:
+        cand["bm25_score"] = to_float(cand.get("lexical_db_score"))
+
+    hydrated.sort(key=lambda x: x.get("bm25_score", 0.0), reverse=True)
+    return hydrated[:top_k]
 
 
 def _merge_recall_candidates(*candidate_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -467,6 +504,7 @@ def _merge_recall_candidates(*candidate_groups: list[dict[str, Any]]) -> list[di
             "embedding_score",
             "keyword_score",
             "bm25_score",
+            "lexical_db_score",
             "title_match_score",
             "section_match_score",
             "coverage_score",
@@ -623,11 +661,21 @@ def _expand_neighbor_chunks(candidates: list[dict[str, Any]], target_limit: int)
     for cand in candidates:
         doc_id = cand.get("document_id")
         if doc_id is not None:
-            grouped[doc_id].append(cand)
+            grouped[int(doc_id)].append(cand)
 
     for doc_id, doc_cands in grouped.items():
-        doc_rows = get_chunks_by_document_id(doc_id) or []
-        index_map = {safe_get(r, "chunk_index"): r for r in doc_rows}
+        center_indexes = [
+            int(c.get("chunk_index"))
+            for c in doc_cands
+            if c.get("chunk_index") is not None
+        ]
+        neighbor_rows = get_neighbor_chunks(
+            document_id=doc_id,
+            center_chunk_indexes=center_indexes,
+            window=RETRIEVAL_NEIGHBOR_WINDOW,
+        ) or []
+
+        index_map = {safe_get(r, "chunk_index"): r for r in neighbor_rows}
 
         for cand in doc_cands:
             cid = cand.get("chunk_id")
@@ -671,29 +719,29 @@ def _expand_neighbor_chunks(candidates: list[dict[str, Any]], target_limit: int)
 
 
 def retrieve_chunks(query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]:
-    rows = get_all_chunks() or []
-    if not rows:
+    query_info = _normalize_query(query)
+    if not query_info.get("normalized_query"):
         return []
 
-    query_info = _normalize_query(query)
-
-    vector_hits = _vector_recall(
+    lexical_hits = _lexical_recall_from_db(
         query_info=query_info,
-        rows=rows,
+        top_k=max(top_k, HYBRID_HYDRATE_TOP_K),
+    )
+    if not lexical_hits:
+        return []
+
+    vector_hits = _vector_recall_from_candidates(
+        query_info=query_info,
+        candidates=lexical_hits,
         top_k=max(top_k, HYBRID_VECTOR_TOP_K),
     )
-    bm25_hits = _bm25_recall(
+    keyword_hits = _keyword_recall_from_candidates(
         query_info=query_info,
-        rows=rows,
-        top_k=max(top_k, HYBRID_KEYWORD_TOP_K),
-    )
-    keyword_hits = _keyword_recall(
-        query_info=query_info,
-        rows=rows,
+        candidates=lexical_hits,
         top_k=max(top_k, HYBRID_KEYWORD_TOP_K),
     )
 
-    merged = _merge_recall_candidates(vector_hits, bm25_hits, keyword_hits)
+    merged = _merge_recall_candidates(lexical_hits, vector_hits, keyword_hits)
     reranked = _rerank_hybrid_candidates(merged, query_info=query_info)
     primary = _deduplicate_candidates(reranked, top_k=top_k)
     expanded = _expand_neighbor_chunks(

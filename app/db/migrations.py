@@ -102,8 +102,8 @@ def _migration_002_chunks_extra_columns(cursor) -> None:
         cursor.execute(
             """
             ALTER TABLE document_chunks
-            ADD COLUMN updated_at TIMESTAMP NOT NULL
-            DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ON UPDATE CURRENT_TIMESTAMP
             """
         )
 
@@ -124,8 +124,8 @@ def _migration_003_chat_sessions_extra_columns(cursor) -> None:
         cursor.execute(
             """
             ALTER TABLE chat_sessions
-            ADD COLUMN updated_at TIMESTAMP NOT NULL
-            DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ON UPDATE CURRENT_TIMESTAMP
             """
         )
 
@@ -148,12 +148,40 @@ def _migration_004_chat_messages_extra_columns(cursor) -> None:
         cursor.execute("CREATE INDEX idx_chat_messages_created_at ON chat_messages(created_at)")
 
 
+def _migration_005_chunk_search_indexes(cursor) -> None:
+    if not _table_exists(cursor, "document_chunks"):
+        return
+
+    if not _index_exists(cursor, "document_chunks", "idx_chunks_document_chunk"):
+        cursor.execute(
+            """
+            CREATE INDEX idx_chunks_document_chunk
+            ON document_chunks(document_id, chunk_index)
+            """
+        )
+
+    if not _index_exists(cursor, "document_chunks", "ft_chunks_lexical"):
+        cursor.execute(
+            """
+            ALTER TABLE document_chunks
+            ADD FULLTEXT INDEX ft_chunks_lexical (
+                lexical_text,
+                search_text,
+                doc_title,
+                section_title
+            )
+            """
+        )
+
+
 def run_migrations(cursor) -> None:
     migrations = [
         ("001_documents_extra_columns", _migration_001_documents_extra_columns),
         ("002_chunks_extra_columns", _migration_002_chunks_extra_columns),
         ("003_chat_sessions_extra_columns", _migration_003_chat_sessions_extra_columns),
         ("004_chat_messages_extra_columns", _migration_004_chat_messages_extra_columns),
+        ("005_chunk_search_indexes", _migration_005_chunk_search_indexes),
     ]
+
     for version, fn in migrations:
         _apply_migration(cursor, version, fn)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Iterable
 
 import app.config as config
 from app.db.connection import get_cursor
@@ -21,6 +22,21 @@ def _column_exists(cursor, table_name: str, column_name: str) -> bool:
         LIMIT 1
         """,
         (table_name, column_name),
+    )
+    return cursor.fetchone() is not None
+
+
+def _index_exists(cursor, table_name: str, index_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND INDEX_NAME = %s
+        LIMIT 1
+        """,
+        (table_name, index_name),
     )
     return cursor.fetchone() is not None
 
@@ -60,6 +76,56 @@ def _normalize_chunk_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [_normalize_chunk_row(row) for row in rows]
 
 
+def _tokenize_terms(query: str) -> list[str]:
+    if not query:
+        return []
+    return [term for term in re.findall(r"[\w\u4e00-\u9fff]+", query.lower()) if term]
+
+
+def _build_boolean_query(query: str, *, require_all: bool = False) -> str:
+    terms = _tokenize_terms(query)
+    if not terms:
+        return ""
+
+    cleaned: list[str] = []
+    for term in terms:
+        term = term.strip()
+        if not term:
+            continue
+        term = re.sub(r'[+\-<>~*"()@]+', " ", term).strip()
+        if not term:
+            continue
+        if require_all:
+            cleaned.append(f"+{term}*")
+        else:
+            cleaned.append(f"{term}*")
+    return " ".join(cleaned)
+
+
+def ensure_chunk_search_indexes() -> None:
+    with get_cursor(commit=True) as (_, cursor):
+        if not _index_exists(cursor, "document_chunks", "idx_chunks_document_chunk"):
+            cursor.execute(
+                """
+                CREATE INDEX idx_chunks_document_chunk
+                ON document_chunks(document_id, chunk_index)
+                """
+            )
+
+        if not _index_exists(cursor, "document_chunks", "ft_chunks_lexical"):
+            cursor.execute(
+                """
+                ALTER TABLE document_chunks
+                ADD FULLTEXT INDEX ft_chunks_lexical (
+                    lexical_text,
+                    search_text,
+                    doc_title,
+                    section_title
+                )
+                """
+            )
+
+
 def insert_chunk(
     document_id: int,
     chunk_text: str,
@@ -96,7 +162,7 @@ def insert_chunk(
 
         add_if_exists("embedding", embedding, json_dump=True)
         add_if_exists("chunk_index", chunk_index)
-        add_if_exists("section_path", section_path, json_dump=not isinstance(section_path, str))
+        add_if_exists("section_path", section_path, json_dump=True)
         add_if_exists("page_start", page_start)
         add_if_exists("page_end", page_end)
         add_if_exists("block_start_index", block_start_index)
@@ -161,93 +227,102 @@ def insert_chunk(
         return int(cursor.lastrowid)
 
 
+def _select_chunk_columns_sql(cursor) -> str:
+    text_column = _chunk_text_column(cursor)
+
+    if text_column == "content":
+        return """
+            SELECT
+                id,
+                document_id,
+                chunk_index,
+                content,
+                content AS chunk_text,
+                search_text,
+                lexical_text,
+                embedding,
+                chunk_type,
+                doc_title,
+                section_title,
+                section_path,
+                page_start,
+                page_end,
+                block_start_index,
+                block_end_index,
+                token_count,
+                chunk_hash,
+                metadata_json,
+                embedding_model,
+                created_at,
+                updated_at
+            FROM document_chunks
+        """
+
+    return """
+        SELECT
+            id,
+            document_id,
+            chunk_index,
+            chunk_text,
+            chunk_text AS content,
+            search_text,
+            lexical_text,
+            embedding,
+            chunk_type,
+            doc_title,
+            section_title,
+            section_path,
+            page_start,
+            page_end,
+            block_start_index,
+            block_end_index,
+            token_count,
+            chunk_hash,
+            metadata_json,
+            embedding_model,
+            created_at,
+            updated_at
+        FROM document_chunks
+    """
+
+
 def get_chunk_by_id(chunk_id: int) -> dict[str, Any] | None:
     with get_cursor() as (_, cursor):
-        text_column = _chunk_text_column(cursor)
-
-        if text_column == "content":
-            select_sql = """
-                SELECT
-                    id,
-                    document_id,
-                    chunk_index,
-                    content,
-                    content AS chunk_text,
-                    search_text,
-                    lexical_text,
-                    embedding,
-                    chunk_type,
-                    doc_title,
-                    section_title,
-                    section_path,
-                    page_start,
-                    page_end,
-                    block_start_index,
-                    block_end_index,
-                    token_count,
-                    chunk_hash,
-                    metadata_json,
-                    embedding_model,
-                    created_at,
-                    updated_at
-                FROM document_chunks
-                WHERE id = %s
-                LIMIT 1
-            """
-        else:
-            select_sql = """
-                SELECT *
-                FROM document_chunks
-                WHERE id = %s
-                LIMIT 1
-            """
-
+        select_sql = _select_chunk_columns_sql(cursor) + " WHERE id = %s LIMIT 1"
         cursor.execute(select_sql, (chunk_id,))
         row = cursor.fetchone()
         return _normalize_chunk_row(row)
 
 
+def get_chunks_by_ids(chunk_ids: Iterable[int]) -> list[dict[str, Any]]:
+    ids = [int(chunk_id) for chunk_id in chunk_ids if chunk_id is not None]
+    if not ids:
+        return []
+
+    seen: set[int] = set()
+    unique_ids: list[int] = []
+    for chunk_id in ids:
+        if chunk_id in seen:
+            continue
+        seen.add(chunk_id)
+        unique_ids.append(chunk_id)
+
+    with get_cursor() as (_, cursor):
+        placeholders = ", ".join(["%s"] * len(unique_ids))
+        select_sql = _select_chunk_columns_sql(cursor) + f" WHERE id IN ({placeholders})"
+        cursor.execute(select_sql, unique_ids)
+        rows = cursor.fetchall() or []
+
+    row_map = {int(row["id"]): _normalize_chunk_row(row) for row in rows}
+    return [row_map[chunk_id] for chunk_id in unique_ids if chunk_id in row_map]
+
+
 def get_chunks_by_document_id(document_id: int) -> list[dict[str, Any]]:
     with get_cursor() as (_, cursor):
-        text_column = _chunk_text_column(cursor)
-
-        if text_column == "content":
-            select_sql = """
-                SELECT
-                    id,
-                    document_id,
-                    chunk_index,
-                    content,
-                    content AS chunk_text,
-                    search_text,
-                    lexical_text,
-                    embedding,
-                    chunk_type,
-                    doc_title,
-                    section_title,
-                    section_path,
-                    page_start,
-                    page_end,
-                    block_start_index,
-                    block_end_index,
-                    token_count,
-                    chunk_hash,
-                    metadata_json,
-                    embedding_model,
-                    created_at,
-                    updated_at
-                FROM document_chunks
-                WHERE document_id = %s
-                ORDER BY chunk_index ASC, id ASC
-            """
-        else:
-            select_sql = """
-                SELECT *
-                FROM document_chunks
-                WHERE document_id = %s
-                ORDER BY chunk_index ASC, id ASC
-            """
-
+        select_sql = _select_chunk_columns_sql(cursor) + """
+            WHERE document_id = %s
+            ORDER BY chunk_index ASC, id ASC
+        """
         cursor.execute(select_sql, (document_id,))
         rows = cursor.fetchall() or []
         return _normalize_chunk_rows(rows)
@@ -255,46 +330,158 @@ def get_chunks_by_document_id(document_id: int) -> list[dict[str, Any]]:
 
 def get_all_chunks() -> list[dict[str, Any]]:
     with get_cursor() as (_, cursor):
-        text_column = _chunk_text_column(cursor)
-
-        if text_column == "content":
-            select_sql = """
-                SELECT
-                    id,
-                    document_id,
-                    chunk_index,
-                    content,
-                    content AS chunk_text,
-                    search_text,
-                    lexical_text,
-                    embedding,
-                    chunk_type,
-                    doc_title,
-                    section_title,
-                    section_path,
-                    page_start,
-                    page_end,
-                    block_start_index,
-                    block_end_index,
-                    token_count,
-                    chunk_hash,
-                    metadata_json,
-                    embedding_model,
-                    created_at,
-                    updated_at
-                FROM document_chunks
-                ORDER BY document_id ASC, chunk_index ASC, id ASC
-            """
-        else:
-            select_sql = """
-                SELECT *
-                FROM document_chunks
-                ORDER BY document_id ASC, chunk_index ASC, id ASC
-            """
-
+        select_sql = _select_chunk_columns_sql(cursor) + """
+            ORDER BY document_id ASC, chunk_index ASC, id ASC
+        """
         cursor.execute(select_sql)
         rows = cursor.fetchall() or []
         return _normalize_chunk_rows(rows)
+
+
+def search_chunks_fulltext(
+    query_text: str,
+    limit: int = 100,
+    *,
+    document_id: int | None = None,
+) -> list[dict[str, Any]]:
+    query_text = (query_text or "").strip()
+    if not query_text:
+        return []
+
+    limit = max(1, min(int(limit), 1000))
+
+    with get_cursor() as (_, cursor):
+        where_clauses = [
+            "MATCH(lexical_text, search_text, doc_title, section_title) AGAINST (%s IN NATURAL LANGUAGE MODE)"
+        ]
+        params: list[Any] = [query_text]
+
+        if document_id is not None:
+            where_clauses.append("document_id = %s")
+            params.append(document_id)
+
+        params.extend([query_text, limit])
+
+        cursor.execute(
+            f"""
+            SELECT
+                id,
+                document_id,
+                chunk_index,
+                doc_title,
+                section_title,
+                section_path,
+                chunk_type,
+                page_start,
+                page_end,
+                token_count,
+                MATCH(lexical_text, search_text, doc_title, section_title)
+                    AGAINST (%s IN NATURAL LANGUAGE MODE) AS lexical_score
+            FROM document_chunks
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY lexical_score DESC, id DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        rows = cursor.fetchall() or []
+
+    return normalize_rows_json_fields(rows, ("section_path",))
+
+
+def search_chunks_boolean(
+    query_text: str,
+    limit: int = 100,
+    *,
+    document_id: int | None = None,
+    require_all_terms: bool = False,
+) -> list[dict[str, Any]]:
+    boolean_query = _build_boolean_query(query_text, require_all=require_all_terms)
+    if not boolean_query:
+        return []
+
+    limit = max(1, min(int(limit), 1000))
+
+    with get_cursor() as (_, cursor):
+        where_clauses = [
+            "MATCH(lexical_text, search_text, doc_title, section_title) AGAINST (%s IN BOOLEAN MODE)"
+        ]
+        params: list[Any] = [boolean_query]
+
+        if document_id is not None:
+            where_clauses.append("document_id = %s")
+            params.append(document_id)
+
+        params.extend([boolean_query, limit])
+
+        cursor.execute(
+            f"""
+            SELECT
+                id,
+                document_id,
+                chunk_index,
+                doc_title,
+                section_title,
+                section_path,
+                chunk_type,
+                page_start,
+                page_end,
+                token_count,
+                MATCH(lexical_text, search_text, doc_title, section_title)
+                    AGAINST (%s IN BOOLEAN MODE) AS lexical_score
+            FROM document_chunks
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY lexical_score DESC, id DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        rows = cursor.fetchall() or []
+
+    return normalize_rows_json_fields(rows, ("section_path",))
+
+
+def get_neighbor_chunks(
+    document_id: int,
+    center_chunk_indexes: Iterable[int],
+    window: int = 1,
+) -> list[dict[str, Any]]:
+    indexes = sorted({int(idx) for idx in center_chunk_indexes if idx is not None})
+    if not indexes:
+        return []
+
+    window = max(0, int(window))
+
+    ranges: list[tuple[int, int]] = []
+    for idx in indexes:
+        start = max(0, idx - window)
+        end = idx + window
+        ranges.append((start, end))
+
+    # 合并重叠区间，减少 OR 子句数量
+    merged_ranges: list[tuple[int, int]] = []
+    for start, end in sorted(ranges):
+        if not merged_ranges or start > merged_ranges[-1][1] + 1:
+            merged_ranges.append((start, end))
+        else:
+            prev_start, prev_end = merged_ranges[-1]
+            merged_ranges[-1] = (prev_start, max(prev_end, end))
+
+    with get_cursor() as (_, cursor):
+        range_sql = " OR ".join("(chunk_index BETWEEN %s AND %s)" for _ in merged_ranges)
+        params: list[Any] = [document_id]
+        for start, end in merged_ranges:
+            params.extend([start, end])
+
+        select_sql = _select_chunk_columns_sql(cursor) + f"""
+            WHERE document_id = %s
+              AND ({range_sql})
+            ORDER BY chunk_index ASC, id ASC
+        """
+        cursor.execute(select_sql, params)
+        rows = cursor.fetchall() or []
+
+    return _normalize_chunk_rows(rows)
 
 
 def clear_chunks_by_document_id(document_id: int) -> int:

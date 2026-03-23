@@ -61,10 +61,10 @@ def init_schema(cursor) -> None:
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_document_chunk (document_id, chunk_index),
             INDEX idx_chunks_document_id (document_id),
+            INDEX idx_chunks_document_chunk (document_id, chunk_index),
             INDEX idx_chunks_chunk_hash (chunk_hash),
-            CONSTRAINT fk_chunks_document
-                FOREIGN KEY (document_id) REFERENCES documents(id)
-                ON DELETE CASCADE
+            CONSTRAINT fk_chunks_document FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+            FULLTEXT KEY ft_chunks_lexical (lexical_text, search_text, doc_title, section_title)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
@@ -97,9 +97,7 @@ def init_schema(cursor) -> None:
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_chat_messages_session_id (session_id),
             INDEX idx_chat_messages_created_at (created_at),
-            CONSTRAINT fk_chat_messages_session
-                FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id)
-                ON DELETE CASCADE
+            CONSTRAINT fk_chat_messages_session FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )

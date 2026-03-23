@@ -2,7 +2,8 @@ import argparse
 import json
 from typing import Any
 
-from app.db import init_db
+
+from app.db import get_all_documents, init_db, reset_database
 from app.services import (
     answer_question,
     get_chat_history,
@@ -10,7 +11,6 @@ from app.services import (
     import_documents,
     import_single_document,
     index_document,
-    list_documents,
     summarize_document,
 )
 
@@ -46,6 +46,18 @@ def cmd_init_db(_args):
     print("数据库初始化完成。")
 
 
+def cmd_reset_db(args):
+    if not args.yes:
+        raise SystemExit("这是危险操作，请加 --yes 确认执行。")
+
+    reset_database(keep_schema=not args.drop)
+
+    if args.drop:
+        print("数据库已删除并重建完成。")
+    else:
+        print("数据库数据已清空，表结构已保留。")
+
+
 def cmd_import_folder(args):
     result = import_documents(args.folder)
     print_json(result)
@@ -57,9 +69,8 @@ def cmd_import_file(args):
 
 
 def cmd_list_docs(_args):
-    rows = list_documents()
+    rows = get_all_documents()
     simplified = []
-
     for row in rows:
         simplified.append(
             {
@@ -68,20 +79,17 @@ def cmd_list_docs(_args):
                 "file_path": row.get("file_path"),
                 "file_type": row.get("file_type"),
                 "source_type": row.get("source_type"),
-                "lang": row.get("lang"),
-                "author": row.get("author"),
                 "block_count": row.get("block_count"),
                 "created_at": row.get("created_at"),
                 "updated_at": row.get("updated_at"),
             }
         )
-
     print_json(simplified)
 
 
 def cmd_index(args):
     result = index_document(
-        document_id=args.document_id,
+        document_id=args.doc_id,
         chunk_size=args.chunk_size,
         overlap=args.overlap,
     )
@@ -89,7 +97,7 @@ def cmd_index(args):
 
 
 def cmd_chunks(args):
-    rows = get_document_chunks(args.document_id)
+    rows = get_document_chunks(args.doc_id)
     simplified = []
 
     for row in rows:
@@ -127,7 +135,7 @@ def cmd_ask(args):
 
 
 def cmd_summary(args):
-    result = summarize_document(args.document_id)
+    result = summarize_document(args.doc_id)
     print_json(result)
 
 
@@ -143,6 +151,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = subparsers.add_parser("init-db", help="初始化数据库")
     p_init.set_defaults(func=cmd_init_db)
 
+    p_reset = subparsers.add_parser("reset-db", help="重置数据库")
+    p_reset.add_argument(
+        "--drop",
+        action="store_true",
+        help="删除所有表并重新初始化，而不是仅清空数据",
+    )
+    p_reset.add_argument(
+        "--yes",
+        action="store_true",
+        help="确认执行危险操作",
+    )
+    p_reset.set_defaults(func=cmd_reset_db)
+
     p_import = subparsers.add_parser("import", help="导入文件夹中的文档")
     p_import.add_argument("folder", help="文件夹路径")
     p_import.set_defaults(func=cmd_import_folder)
@@ -155,13 +176,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list_docs)
 
     p_index = subparsers.add_parser("index", help="为指定文档建立索引")
-    p_index.add_argument("--document-id", type=int, required=True, help="文档 ID")
-    p_index.add_argument("--chunk-size", type=int, default=700, help="chunk 大小")
-    p_index.add_argument("--overlap", type=int, default=120, help="chunk overlap")
+    p_index.add_argument("--doc-id", type=int, required=True, help="文档 ID")
+    p_index.add_argument(
+        "--chunk-size",
+        type=int,
+        default=700,
+        help="chunk 大小",
+    )
+    p_index.add_argument(
+        "--overlap",
+        type=int,
+        default=120,
+        help="chunk overlap",
+    )
     p_index.set_defaults(func=cmd_index)
 
     p_chunks = subparsers.add_parser("chunks", help="查看指定文档的 chunks")
-    p_chunks.add_argument("--document-id", type=int, required=True, help="文档 ID")
+    p_chunks.add_argument("--doc-id", type=int, required=True, help="文档 ID")
     p_chunks.set_defaults(func=cmd_chunks)
 
     p_ask = subparsers.add_parser("ask", help="基于知识库提问")
@@ -194,7 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask.set_defaults(func=cmd_ask)
 
     p_summary = subparsers.add_parser("summary", help="摘要指定文档")
-    p_summary.add_argument("--document-id", type=int, required=True, help="文档 ID")
+    p_summary.add_argument("--doc-id", type=int, required=True, help="文档 ID")
     p_summary.set_defaults(func=cmd_summary)
 
     p_history = subparsers.add_parser("chat-history", help="查看会话历史")
