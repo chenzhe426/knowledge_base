@@ -2,7 +2,6 @@ import math
 import re
 from collections import Counter, defaultdict
 from typing import Any
-from app.services.vector_store import vector_store
 
 import app.config as config
 from app.db import (
@@ -18,6 +17,7 @@ from app.services.common import (
     safe_json_loads,
     to_float,
 )
+from app.services.vector_store import vector_store
 
 
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -114,16 +114,14 @@ def _tokenize_query(text: str) -> list[str]:
 
     return filtered
 
+
 def _normalize_mixed_language_query(text: str) -> str:
     text = normalize_whitespace(text or "")
     if not text:
         return ""
 
-    # 中文 -> 英文/数字 边界
     text = re.sub(r"([\u4e00-\u9fff])([A-Za-z0-9]+)", r"\1 \2", text)
-    # 英文/数字 -> 中文 边界
     text = re.sub(r"([A-Za-z0-9]+)([\u4e00-\u9fff])", r"\1 \2", text)
-    # 压缩空白
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -394,13 +392,68 @@ def _hydrate_candidates(raw_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     return results
 
-def _vector_recall_from_candidates(
+
+def _vector_recall_from_qdrant(
     query_info: dict[str, Any],
-    candidates: list[dict[str, Any]],
     top_k: int,
 ) -> list[dict[str, Any]]:
     query_text = query_info.get("normalized_query", "")
-    return vector_store.score_candidates(query_text, candidates, top_k)
+    if not query_text or top_k <= 0:
+        return []
+
+    hits = vector_store.search(query_text, top_k=top_k)
+    if not hits:
+        return []
+
+    chunk_ids: list[int] = []
+    for item in hits:
+        chunk_id = item.get("chunk_id")
+        if chunk_id is None:
+            continue
+        try:
+            chunk_ids.append(int(chunk_id))
+        except (TypeError, ValueError):
+            continue
+
+    if not chunk_ids:
+        return []
+
+    hydrated_rows = get_chunks_by_ids(chunk_ids) or []
+    row_map = {int(row["id"]): row for row in hydrated_rows if safe_get(row, "id") is not None}
+
+    results: list[dict[str, Any]] = []
+    for hit in hits:
+        chunk_id = hit.get("chunk_id")
+        if chunk_id is None:
+            continue
+
+        try:
+            chunk_id = int(chunk_id)
+        except (TypeError, ValueError):
+            continue
+
+        row = row_map.get(chunk_id)
+        if not row:
+            continue
+
+        cand = _row_to_candidate(row)
+        cand["embedding_score"] = to_float(hit.get("embedding_score"))
+        cand["final_score"] = cand["embedding_score"]
+
+        if hit.get("document_id") is not None:
+            cand["document_id"] = hit.get("document_id")
+        if hit.get("chunk_index") is not None:
+            cand["chunk_index"] = hit.get("chunk_index")
+
+        results.append(cand)
+
+    _normalize_scores(results, "embedding_score")
+    for item in results:
+        item["final_score"] = to_float(item.get("embedding_score"))
+
+    results.sort(key=lambda x: x.get("embedding_score", 0.0), reverse=True)
+    return results[:top_k]
+
 
 def _keyword_recall_from_candidates(
     query_info: dict[str, Any],
@@ -706,21 +759,24 @@ def retrieve_chunks(query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, An
         query_info=query_info,
         top_k=max(top_k, HYBRID_HYDRATE_TOP_K),
     )
-    if not lexical_hits:
-        return []
 
-    vector_hits = _vector_recall_from_candidates(
+    vector_hits = _vector_recall_from_qdrant(
         query_info=query_info,
-        candidates=lexical_hits,
         top_k=max(top_k, HYBRID_VECTOR_TOP_K),
     )
+
+    if not lexical_hits and not vector_hits:
+        return []
+
+    seed_candidates = _merge_recall_candidates(lexical_hits, vector_hits)
+
     keyword_hits = _keyword_recall_from_candidates(
         query_info=query_info,
-        candidates=lexical_hits,
+        candidates=seed_candidates,
         top_k=max(top_k, HYBRID_KEYWORD_TOP_K),
     )
 
-    merged = _merge_recall_candidates(lexical_hits, vector_hits, keyword_hits)
+    merged = _merge_recall_candidates(seed_candidates, keyword_hits)
     reranked = _rerank_hybrid_candidates(merged, query_info=query_info)
     primary = _deduplicate_candidates(reranked, top_k=top_k)
     expanded = _expand_neighbor_chunks(
