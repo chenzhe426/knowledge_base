@@ -1,17 +1,24 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.db import init_db
+from app.db import create_chat_session, get_chat_session, init_db
 from app.models import (
     AskRequest,
     AskResponse,
     ChatHistoryResponse,
     ChatSessionCreateRequest,
     ChatSessionResponse,
+    DocumentImportResponse,
     ImportFileRequest,
+    ImportFileResponse,
     ImportFolderRequest,
+    ImportFolderResponse,
     IndexRequest,
+    IndexResponse,
     SummaryRequest,
+    SummaryResponse,
 )
 from app.services import (
     answer_question,
@@ -21,13 +28,19 @@ from app.services import (
     index_document,
     summarize_document,
 )
-from app.db import create_chat_session, get_chat_session
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
 
 
 app = FastAPI(
     title="Knowledge Base API",
     version="2.0.0",
     description="Local RAG knowledge base with hybrid retrieval, structured output, highlighting, and chat context.",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -39,37 +52,37 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def startup_event():
-    init_db()
-
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-@app.post("/import/folder")
+@app.post("/import/folder", response_model=ImportFolderResponse)
 def import_folder(req: ImportFolderRequest):
     try:
         result = import_documents(req.folder)
-        return {
-            "ok": True,
-            "count": len(result) if isinstance(result, list) else 0,
-            "documents": result,
-        }
+        documents = [
+            item if isinstance(item, DocumentImportResponse) else DocumentImportResponse(**item)
+            for item in (result or [])
+        ]
+        return ImportFolderResponse(
+            ok=True,
+            count=len(documents),
+            documents=documents,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/import/file")
+@app.post("/import/file", response_model=ImportFileResponse)
 def import_file(req: ImportFileRequest):
     try:
         result = import_single_document(req.file_path)
-        return {
-            "ok": True,
-            "document": result,
-        }
+        document = result if isinstance(result, DocumentImportResponse) else DocumentImportResponse(**result)
+        return ImportFileResponse(
+            ok=True,
+            document=document,
+        )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -78,18 +91,15 @@ def import_file(req: ImportFileRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/index")
+@app.post("/index", response_model=IndexResponse)
 def build_index(req: IndexRequest):
     try:
         result = index_document(
-            doc_id=req.doc_id,
+            document_id=req.document_id,
             chunk_size=req.chunk_size,
             overlap=req.overlap,
         )
-        return {
-            "ok": True,
-            **result,
-        }
+        return IndexResponse(ok=True, **result)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -114,14 +124,11 @@ def ask(req: AskRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/summary")
+@app.post("/summary", response_model=SummaryResponse)
 def summary(req: SummaryRequest):
     try:
-        result = summarize_document(req.doc_id)
-        return {
-            "ok": True,
-            **result,
-        }
+        result = summarize_document(req.document_id)
+        return SummaryResponse(ok=True, **result)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

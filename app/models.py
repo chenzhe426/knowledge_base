@@ -32,7 +32,6 @@ class ChunkResult(BaseModel):
     section_match_score: float | None = None
     coverage_score: float | None = None
     matched_term_count: int | None = None
-
     doc_title: str = ""
     section_title: str = ""
     section_path: str = ""
@@ -40,7 +39,6 @@ class ChunkResult(BaseModel):
     page_end: int | None = None
     chunk_type: str | None = None
     chunk_text: str = ""
-
     term_hits: dict[str, int] = Field(default_factory=dict)
     term_hit_detail: dict[str, Any] = Field(default_factory=dict)
     is_neighbor: bool = False
@@ -84,6 +82,46 @@ class AskResponse(BaseModel):
     session_id: str | None = None
 
 
+class IndexedChunkItem(BaseModel):
+    id: int | None = None
+    chunk_index: int
+    chunk_type: str | None = None
+    section_path: str = ""
+    section_title: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+    token_count: int = 0
+    block_start_index: int | None = None
+    block_end_index: int | None = None
+    preview: str = ""
+
+
+class ImportFolderResponse(BaseModel):
+    ok: bool = True
+    count: int = 0
+    documents: list[DocumentImportResponse] = Field(default_factory=list)
+
+
+class ImportFileResponse(BaseModel):
+    ok: bool = True
+    document: DocumentImportResponse
+
+
+class IndexResponse(BaseModel):
+    ok: bool = True
+    document_id: int
+    title: str
+    chunk_count: int = 0
+    chunks: list[IndexedChunkItem] = Field(default_factory=list)
+
+
+class SummaryResponse(BaseModel):
+    ok: bool = True
+    document_id: int
+    title: str
+    summary: str
+
+
 # -----------------------------
 # API requests
 # -----------------------------
@@ -96,7 +134,7 @@ class ImportFileRequest(BaseModel):
 
 
 class IndexRequest(BaseModel):
-    doc_id: int
+    document_id: int
     chunk_size: int = 700
     overlap: int = 120
 
@@ -111,7 +149,7 @@ class AskRequest(BaseModel):
 
 
 class SummaryRequest(BaseModel):
-    doc_id: int
+    document_id: int
 
 
 # -----------------------------

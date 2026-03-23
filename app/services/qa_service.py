@@ -50,6 +50,10 @@ def _page_label(page_start: Any, page_end: Any) -> str:
 
 
 def _normalize_chunk_source(chunk: dict[str, Any]) -> dict[str, Any]:
+    """
+    统一 source 输出结构。
+    该结构应可被 AnswerSource 直接接收。
+    """
     return {
         "chunk_id": chunk.get("chunk_id"),
         "document_id": chunk.get("document_id"),
@@ -91,8 +95,8 @@ def _build_highlight_spans(text: str, terms: list[str]) -> list[dict[str, Any]]:
         return []
 
     spans.sort(key=lambda x: (x[0], x[1]))
-
     merged: list[list[int]] = []
+
     for start, end in spans:
         if not merged or start > merged[-1][1]:
             merged.append([start, end])
@@ -109,7 +113,11 @@ def _build_highlight_spans(text: str, terms: list[str]) -> list[dict[str, Any]]:
     ]
 
 
-def _extract_query_terms(question: str, rewritten_query: str | None, retrieved_chunks: list[dict[str, Any]]) -> list[str]:
+def _extract_query_terms(
+    question: str,
+    rewritten_query: str | None,
+    retrieved_chunks: list[dict[str, Any]],
+) -> list[str]:
     terms = set()
 
     for raw in [question, rewritten_query or ""]:
@@ -128,6 +136,36 @@ def _extract_query_terms(question: str, rewritten_query: str | None, retrieved_c
     return sorted(terms, key=lambda x: (-len(x), x))
 
 
+def _normalize_retrieved_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
+    """
+    统一 retrieved_chunks 输出结构。
+    该结构应可被 ChunkResult 直接接收。
+    """
+    return {
+        "chunk_id": chunk.get("chunk_id"),
+        "document_id": chunk.get("document_id"),
+        "chunk_index": chunk.get("chunk_index"),
+        "score": to_float(chunk.get("score")),
+        "embedding_score": to_float(chunk.get("embedding_score")),
+        "keyword_score": to_float(chunk.get("keyword_score")),
+        "bm25_score": to_float(chunk.get("bm25_score")),
+        "title_match_score": to_float(chunk.get("title_match_score")),
+        "section_match_score": to_float(chunk.get("section_match_score")),
+        "coverage_score": to_float(chunk.get("coverage_score")),
+        "matched_term_count": chunk.get("matched_term_count"),
+        "doc_title": chunk.get("doc_title", "") or "",
+        "section_title": chunk.get("section_title", "") or "",
+        "section_path": chunk.get("section_path", "") or "",
+        "page_start": chunk.get("page_start"),
+        "page_end": chunk.get("page_end"),
+        "chunk_type": chunk.get("chunk_type"),
+        "chunk_text": chunk.get("chunk_text", "") or "",
+        "term_hits": chunk.get("term_hits") or {},
+        "term_hit_detail": chunk.get("term_hit_detail") or {},
+        "is_neighbor": bool(chunk.get("is_neighbor", False)),
+    }
+
+
 def assemble_context(chunks: list[dict[str, Any]], max_chunks: int = QA_MAX_CONTEXT_CHUNKS) -> str:
     if not chunks:
         return ""
@@ -139,11 +177,7 @@ def assemble_context(chunks: list[dict[str, Any]], max_chunks: int = QA_MAX_CONT
         section_title = chunk.get("section_title", "") or ""
         section_path = chunk.get("section_path", "") or ""
         page_label = _page_label(chunk.get("page_start"), chunk.get("page_end"))
-        chunk_text = normalize_whitespace(
-            chunk.get("search_text")
-            or chunk.get("chunk_text")
-            or ""
-        )
+        chunk_text = normalize_whitespace(chunk.get("search_text") or chunk.get("chunk_text") or "")
 
         part = [
             f"[来源 {idx}]",
@@ -197,7 +231,6 @@ def rewrite_query_with_history(history: list[dict[str, Any]], question: str) -> 
         "2. 若当前问题依赖上文代词或省略（如“它”“这个”“第二点”），要补全成完整表达；"
         "3. 只输出改写后的单句查询，不要解释。"
     )
-
     user_prompt = (
         f"对话历史：\n{history_text}\n\n"
         f"当前问题：\n{question}\n\n"
@@ -205,10 +238,7 @@ def rewrite_query_with_history(history: list[dict[str, Any]], question: str) -> 
     )
 
     try:
-        rewritten = chat_completion(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-        )
+        rewritten = chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
         rewritten = normalize_whitespace(rewritten)
         return rewritten or question
     except Exception:
@@ -254,8 +284,7 @@ def _build_structured_answer_prompt(
         "你是一个基于知识库回答问题的助手。"
         "你必须严格依据上下文作答，不要编造。"
         "输出必须是合法 JSON，且只输出 JSON，不要有额外解释。"
-        "JSON 格式如下："
-        '{"answer":"","summary":"","key_points":[],"confidence":0.0}'
+        'JSON 格式如下：{"answer":"","summary":"","key_points":[],"confidence":0.0}'
         "其中 confidence 为 0 到 1 之间的小数。"
         "如果上下文不足，answer 和 summary 中要明确说明信息不足。"
     )
@@ -287,7 +316,6 @@ def _safe_parse_structured_answer(raw_text: str) -> dict[str, Any]:
             "confidence": 0.0,
         }
 
-    # 优先提取 markdown code block 中的 json
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw_text, re.S)
     if fenced:
         raw_text = fenced.group(1).strip()
@@ -317,10 +345,11 @@ def _estimate_confidence(retrieved_chunks: list[dict[str, Any]], answer_text: st
         return 0.05
 
     top_score = max([to_float(c.get("score")) for c in retrieved_chunks] + [0.0])
-    avg_top3 = sum(to_float(c.get("score")) for c in retrieved_chunks[:3]) / max(1, min(3, len(retrieved_chunks)))
+    avg_top3 = sum(to_float(c.get("score")) for c in retrieved_chunks[:3]) / max(
+        1, min(3, len(retrieved_chunks))
+    )
 
     confidence = 0.55 * top_score + 0.45 * avg_top3
-
     if "没有足够信息" in (answer_text or ""):
         confidence *= 0.65
 
@@ -397,14 +426,15 @@ def answer_question(
 
     if not session_id:
         session_id = _new_session_id()
-
-    create_chat_session(session_id=session_id)
+        create_chat_session(session_id=session_id)
 
     history = get_chat_messages(session_id, limit=CHAT_HISTORY_LIMIT) if use_chat_context else []
     rewritten_query = rewrite_query_with_history(history, question) if use_chat_context else question
 
-    retrieved_chunks = retrieve_chunks(rewritten_query, top_k=top_k)
-    context = assemble_context(retrieved_chunks, max_chunks=QA_MAX_CONTEXT_CHUNKS)
+    raw_retrieved_chunks = retrieve_chunks(rewritten_query, top_k=top_k)
+    retrieved_chunks = [_normalize_retrieved_chunk(chunk) for chunk in raw_retrieved_chunks]
+
+    context = assemble_context(raw_retrieved_chunks, max_chunks=QA_MAX_CONTEXT_CHUNKS)
     history_text = _format_history_for_prompt(history, limit=CHAT_HISTORY_LIMIT) if use_chat_context else ""
 
     structured = None
@@ -437,15 +467,16 @@ def answer_question(
             chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
         )
 
-    highlight_terms = _extract_query_terms(question, rewritten_query, retrieved_chunks)
+    highlight_terms = _extract_query_terms(question, rewritten_query, raw_retrieved_chunks)
     sources = _build_sources(
-        retrieved_chunks=retrieved_chunks,
+        retrieved_chunks=raw_retrieved_chunks,
         highlight=highlight,
         highlight_terms=highlight_terms,
         limit=min(5, top_k),
     )
 
-    confidence = _estimate_confidence(retrieved_chunks, answer_text)
+    confidence = _estimate_confidence(raw_retrieved_chunks, answer_text)
+
     if structured is not None:
         structured["sources"] = sources
         if not structured.get("confidence"):
@@ -467,7 +498,8 @@ def answer_question(
         metadata_json={"confidence": confidence, "response_mode": response_mode},
     )
 
-    if not get_chat_session(session_id).get("title"):
+    session = get_chat_session(session_id)
+    if session and not session.get("title"):
         update_chat_session(session_id=session_id, title=_truncate_text(question, 80))
 
     _maybe_update_session_summary(session_id)
@@ -484,17 +516,13 @@ def answer_question(
     }
 
 
-def summarize_document(doc_id: int) -> dict[str, Any]:
-    row = get_document_by_id(doc_id)
+def summarize_document(document_id: int) -> dict[str, Any]:
+    row = get_document_by_id(document_id)
     if not row:
         raise ValueError("document not found")
 
     title = row.get("title", "") or ""
-    content = normalize_whitespace(
-        row.get("content")
-        or row.get("raw_text")
-        or ""
-    )
+    content = normalize_whitespace(row.get("content") or row.get("raw_text") or "")
 
     if not content:
         summary = "文档内容为空，无法摘要。"
@@ -502,7 +530,7 @@ def summarize_document(doc_id: int) -> dict[str, Any]:
         summary = summarize_text(content)
 
     return {
-        "document_id": doc_id,
+        "document_id": document_id,
         "title": title,
         "summary": normalize_whitespace(summary),
     }
@@ -535,6 +563,8 @@ def get_chat_history(session_id: str, limit: int = 20) -> dict[str, Any]:
             "metadata": safe_get(session, "metadata_json", {}) or {},
             "created_at": safe_get(session, "created_at"),
             "updated_at": safe_get(session, "updated_at"),
-        } if session else None,
+        }
+        if session
+        else None,
         "messages": normalized_messages,
     }

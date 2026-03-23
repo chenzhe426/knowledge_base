@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.db import get_chunks_by_document_id, get_all_documents, insert_document
+from app.db import get_all_documents, get_chunks_by_document_id, insert_document
 from app.ingestion.pipeline import parse_document, parse_documents_from_folder
 from app.services.common import (
     normalize_section_path,
@@ -20,8 +20,10 @@ def _hash_text(text: str) -> str:
 def _normalize_tags(value: Any) -> list[str]:
     if value is None:
         return []
+
     if isinstance(value, list):
         return [normalize_whitespace(str(x)) for x in value if normalize_whitespace(str(x))]
+
     if isinstance(value, str):
         value = value.strip()
         if not value:
@@ -29,14 +31,17 @@ def _normalize_tags(value: Any) -> list[str]:
         if "," in value:
             return [normalize_whitespace(x) for x in value.split(",") if normalize_whitespace(x)]
         return [normalize_whitespace(value)]
+
     return [normalize_whitespace(str(value))]
 
 
 def _parse_datetime_like(value: Any):
     if value is None:
         return None
+
     if isinstance(value, datetime):
         return value
+
     if isinstance(value, str):
         value = value.strip()
         if not value:
@@ -57,6 +62,7 @@ def _parse_datetime_like(value: Any):
             return datetime.fromisoformat(value)
         except Exception:
             return None
+
     return None
 
 
@@ -86,7 +92,8 @@ def _normalize_block(block: Any) -> dict[str, Any]:
 def _normalize_blocks(blocks: Any) -> list[dict[str, Any]]:
     if not blocks:
         return []
-    normalized = []
+
+    normalized: list[dict[str, Any]] = []
     for block in blocks:
         item = _normalize_block(block)
         if item.get("text"):
@@ -94,35 +101,45 @@ def _normalize_blocks(blocks: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _to_document_import_result(payload: dict[str, Any], doc_id: int) -> dict[str, Any]:
+    """
+    统一 document import 类接口的 service 输出结构。
+    该结构应可被 DocumentImportResponse 直接接收。
+    """
+    return {
+        "id": doc_id,
+        "title": payload["title"],
+        "file_path": payload["file_path"],
+        "file_type": payload["file_type"],
+        "source_type": payload["source_type"],
+        "lang": payload["lang"],
+        "author": payload["author"],
+        "block_count": payload["block_count"],
+        "metadata": payload["metadata_json"] or {},
+        "tags": payload["tags_json"] or [],
+    }
+
+
 def parsed_document_to_db_payload(parsed_doc: Any, source_path: str | None = None) -> dict[str, Any]:
     title = normalize_whitespace(
-        safe_get(parsed_doc, "title")
-        or (Path(source_path).stem if source_path else "")
-        or "Untitled"
+        safe_get(parsed_doc, "title") or (Path(source_path).stem if source_path else "") or "Untitled"
     )
-
     content = normalize_whitespace(
-        safe_get(parsed_doc, "content")
-        or safe_get(parsed_doc, "raw_text")
-        or ""
+        safe_get(parsed_doc, "content") or safe_get(parsed_doc, "raw_text") or ""
     )
-
     raw_text = normalize_whitespace(
-        safe_get(parsed_doc, "raw_text")
-        or safe_get(parsed_doc, "content")
-        or ""
+        safe_get(parsed_doc, "raw_text") or safe_get(parsed_doc, "content") or ""
     )
 
     file_path = safe_get(parsed_doc, "source_path") or source_path
     file_type = normalize_whitespace(safe_get(parsed_doc, "file_type") or "")
+
     metadata = safe_get(parsed_doc, "metadata", {}) or {}
     blocks = _normalize_blocks(safe_get(parsed_doc, "blocks") or [])
 
     source_type = normalize_whitespace(
-        metadata.get("source_type")
-        or ("folder_import" if source_path and Path(source_path).exists() else "upload")
+        metadata.get("source_type") or ("folder_import" if source_path and Path(source_path).exists() else "upload")
     )
-
     lang = normalize_whitespace(metadata.get("lang") or "")
     author = normalize_whitespace(metadata.get("author") or "")
     published_at = _parse_datetime_like(metadata.get("published_at"))
@@ -149,6 +166,7 @@ def parsed_document_to_db_payload(parsed_doc: Any, source_path: str | None = Non
 
 def import_single_document(file_path: str) -> dict[str, Any]:
     path = Path(file_path)
+
     if not path.exists():
         raise FileNotFoundError(f"file not found: {file_path}")
     if not path.is_file():
@@ -159,24 +177,16 @@ def import_single_document(file_path: str) -> dict[str, Any]:
         raise ValueError(f"failed to parse document: {file_path}")
 
     payload = parsed_document_to_db_payload(parsed_doc, source_path=str(path))
-    doc_id = insert_document(**payload)
+    if not payload["content"] and not payload["raw_text"]:
+        raise ValueError(f"document has no content: {file_path}")
 
-    return {
-        "id": doc_id,
-        "title": payload["title"],
-        "file_path": payload["file_path"],
-        "file_type": payload["file_type"],
-        "source_type": payload["source_type"],
-        "lang": payload["lang"],
-        "author": payload["author"],
-        "block_count": payload["block_count"],
-        "metadata": payload["metadata_json"] or {},
-        "tags": payload["tags_json"] or [],
-    }
+    doc_id = insert_document(**payload)
+    return _to_document_import_result(payload, doc_id)
 
 
 def import_documents(folder: str) -> list[dict[str, Any]]:
     folder_path = Path(folder)
+
     if not folder_path.exists():
         raise FileNotFoundError(f"folder not found: {folder}")
     if not folder_path.is_dir():
@@ -188,24 +198,12 @@ def import_documents(folder: str) -> list[dict[str, Any]]:
     for parsed_doc in parsed_docs:
         source_path = safe_get(parsed_doc, "source_path")
         payload = parsed_document_to_db_payload(parsed_doc, source_path=source_path)
+
         if not payload["content"] and not payload["raw_text"]:
             continue
 
         doc_id = insert_document(**payload)
-        results.append(
-            {
-                "id": doc_id,
-                "title": payload["title"],
-                "file_path": payload["file_path"],
-                "file_type": payload["file_type"],
-                "source_type": payload["source_type"],
-                "lang": payload["lang"],
-                "author": payload["author"],
-                "block_count": payload["block_count"],
-                "metadata": payload["metadata_json"] or {},
-                "tags": payload["tags_json"] or [],
-            }
-        )
+        results.append(_to_document_import_result(payload, doc_id))
 
     return results
 
@@ -241,8 +239,8 @@ def list_documents() -> list[dict[str, Any]]:
     return results
 
 
-def get_document_chunks(doc_id: int) -> list[dict[str, Any]]:
-    rows = get_chunks_by_document_id(doc_id) or []
+def get_document_chunks(document_id: int) -> list[dict[str, Any]]:
+    rows = get_chunks_by_document_id(document_id) or []
     results: list[dict[str, Any]] = []
 
     for row in rows:

@@ -712,12 +712,34 @@ def split_blocks_into_chunks(
     return chunks
 
 
+def _to_indexed_chunk_item(chunk_id: int | None, chunk_index: int, chunk: dict[str, Any]) -> dict[str, Any]:
+    """
+    统一 index_document 的 chunk 返回结构。
+    该结构应可被 IndexedChunkItem 直接接收。
+    """
+    search_text = normalize_whitespace(chunk.get("search_text", ""))
+
+    return {
+        "id": chunk_id,
+        "chunk_index": chunk_index,
+        "chunk_type": chunk.get("chunk_type"),
+        "section_path": section_path_to_str(chunk.get("section_path")),
+        "section_title": chunk.get("section_title"),
+        "page_start": chunk.get("page_start"),
+        "page_end": chunk.get("page_end"),
+        "token_count": chunk.get("token_count", 0),
+        "block_start_index": chunk.get("block_start_index"),
+        "block_end_index": chunk.get("block_end_index"),
+        "preview": search_text[:200],
+    }
+
+
 def index_document(
-    doc_id: int,
+    document_id: int,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> dict[str, Any]:
-    row = get_document_by_id(doc_id)
+    row = get_document_by_id(document_id)
     if not row:
         raise ValueError("document not found")
 
@@ -728,7 +750,7 @@ def index_document(
     if not blocks:
         blocks = build_blocks_from_content(content)
 
-    clear_chunks_by_document_id(doc_id)
+    clear_chunks_by_document_id(document_id)
 
     chunks = split_blocks_into_chunks(
         doc_title=title,
@@ -755,7 +777,7 @@ def index_document(
         }
 
         payload = {
-            "document_id": doc_id,
+            "document_id": document_id,
             "chunk_text": chunk_text,
             "search_text": search_text,
             "lexical_text": lexical_text,
@@ -779,24 +801,10 @@ def index_document(
             inserted.get("id") if isinstance(inserted, dict) else None
         )
 
-        saved_chunks.append(
-            {
-                "id": chunk_id,
-                "chunk_index": idx,
-                "chunk_type": chunk.get("chunk_type"),
-                "section_path": section_path_to_str(chunk.get("section_path")),
-                "section_title": chunk.get("section_title"),
-                "page_start": chunk.get("page_start"),
-                "page_end": chunk.get("page_end"),
-                "token_count": chunk.get("token_count", 0),
-                "block_start_index": chunk.get("block_start_index"),
-                "block_end_index": chunk.get("block_end_index"),
-                "preview": search_text[:200],
-            }
-        )
+        saved_chunks.append(_to_indexed_chunk_item(chunk_id=chunk_id, chunk_index=idx, chunk=chunk))
 
     return {
-        "document_id": doc_id,
+        "document_id": document_id,
         "title": title,
         "chunk_count": len(saved_chunks),
         "chunks": saved_chunks,

@@ -2,7 +2,7 @@ import argparse
 import json
 from typing import Any
 
-from app.db import get_all_documents, init_db
+from app.db import init_db
 from app.services import (
     answer_question,
     get_chat_history,
@@ -10,6 +10,7 @@ from app.services import (
     import_documents,
     import_single_document,
     index_document,
+    list_documents,
     summarize_document,
 )
 
@@ -56,8 +57,9 @@ def cmd_import_file(args):
 
 
 def cmd_list_docs(_args):
-    rows = get_all_documents()
+    rows = list_documents()
     simplified = []
+
     for row in rows:
         simplified.append(
             {
@@ -66,17 +68,20 @@ def cmd_list_docs(_args):
                 "file_path": row.get("file_path"),
                 "file_type": row.get("file_type"),
                 "source_type": row.get("source_type"),
+                "lang": row.get("lang"),
+                "author": row.get("author"),
                 "block_count": row.get("block_count"),
                 "created_at": row.get("created_at"),
                 "updated_at": row.get("updated_at"),
             }
         )
+
     print_json(simplified)
 
 
 def cmd_index(args):
     result = index_document(
-        doc_id=args.doc_id,
+        document_id=args.document_id,
         chunk_size=args.chunk_size,
         overlap=args.overlap,
     )
@@ -84,8 +89,9 @@ def cmd_index(args):
 
 
 def cmd_chunks(args):
-    rows = get_document_chunks(args.doc_id)
+    rows = get_document_chunks(args.document_id)
     simplified = []
+
     for row in rows:
         metadata = row.get("metadata_json") or {}
         simplified.append(
@@ -104,6 +110,7 @@ def cmd_chunks(args):
                 "metadata": metadata,
             }
         )
+
     print_json(simplified)
 
 
@@ -120,7 +127,7 @@ def cmd_ask(args):
 
 
 def cmd_summary(args):
-    result = summarize_document(args.doc_id)
+    result = summarize_document(args.document_id)
     print_json(result)
 
 
@@ -148,23 +155,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list_docs)
 
     p_index = subparsers.add_parser("index", help="为指定文档建立索引")
-    p_index.add_argument("--doc-id", type=int, required=True, help="文档 ID")
-    p_index.add_argument(
-        "--chunk-size",
-        type=int,
-        default=700,
-        help="chunk 大小",
-    )
-    p_index.add_argument(
-        "--overlap",
-        type=int,
-        default=120,
-        help="chunk overlap",
-    )
+    p_index.add_argument("--document-id", type=int, required=True, help="文档 ID")
+    p_index.add_argument("--chunk-size", type=int, default=700, help="chunk 大小")
+    p_index.add_argument("--overlap", type=int, default=120, help="chunk overlap")
     p_index.set_defaults(func=cmd_index)
 
     p_chunks = subparsers.add_parser("chunks", help="查看指定文档的 chunks")
-    p_chunks.add_argument("--doc-id", type=int, required=True, help="文档 ID")
+    p_chunks.add_argument("--document-id", type=int, required=True, help="文档 ID")
     p_chunks.set_defaults(func=cmd_chunks)
 
     p_ask = subparsers.add_parser("ask", help="基于知识库提问")
@@ -197,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask.set_defaults(func=cmd_ask)
 
     p_summary = subparsers.add_parser("summary", help="摘要指定文档")
-    p_summary.add_argument("--doc-id", type=int, required=True, help="文档 ID")
+    p_summary.add_argument("--document-id", type=int, required=True, help="文档 ID")
     p_summary.set_defaults(func=cmd_summary)
 
     p_history = subparsers.add_parser("chat-history", help="查看会话历史")
