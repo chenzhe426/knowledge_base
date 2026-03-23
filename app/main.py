@@ -233,7 +233,137 @@ def build_parser() -> argparse.ArgumentParser:
     p_history.add_argument("--limit", type=int, default=20, help="返回消息条数")
     p_history.set_defaults(func=cmd_chat_history)
 
+    p_chat = subparsers.add_parser("chat", help="进入交互聊天模式")
+    p_chat.add_argument(
+        "--session-id",
+        type=str,
+        default="cli-chat",
+        help="会话 ID，用于多轮上下文",
+    )
+    p_chat.add_argument(
+        "--title",
+        type=str,
+        default="CLI Chat",
+        help="会话标题",
+    )
+    p_chat.add_argument("--top-k", type=int, default=5, help="召回 chunk 数量")
+    p_chat.add_argument(
+        "--response-mode",
+        choices=["text", "structured"],
+        default="text",
+        help="回答模式",
+    )
+    p_chat.add_argument(
+        "--highlight",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否开启来源高亮",
+    )
+    p_chat.add_argument(
+        "--use-chat-context",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否使用聊天上下文改写 query",
+    )
+    p_chat.add_argument(
+        "--show-sources",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="每轮后是否显示来源",
+    )
+    p_chat.add_argument(
+        "--show-meta",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="每轮后是否显示改写 query、置信度等信息",
+    )
+    p_chat.add_argument(
+        "--history-limit",
+        type=int,
+        default=20,
+        help="查看历史时返回消息条数",
+    )
+    p_chat.set_defaults(func=cmd_chat)
     return parser
+
+
+def cmd_chat(args):
+    session_id = args.session_id
+    title = args.title
+
+    print("进入交互聊天模式。")
+    print("输入 /exit 或 /quit 退出，输入 /history 查看历史。")
+    print(f"当前 session_id: {session_id}")
+    print("-" * 60)
+
+    while True:
+        try:
+            question = input("你> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已退出聊天。")
+            break
+
+        if not question:
+            continue
+
+        if question in {"/exit", "/quit"}:
+            print("已退出聊天。")
+            break
+
+        if question == "/history":
+            result = get_chat_history(session_id=session_id, limit=args.history_limit)
+            print_json(result)
+            continue
+
+        if question == "/session":
+            print_json(
+                {
+                    "session_id": session_id,
+                    "title": title,
+                    "top_k": args.top_k,
+                    "response_mode": args.response_mode,
+                    "highlight": args.highlight,
+                    "use_chat_context": args.use_chat_context,
+                }
+            )
+            continue
+
+        try:
+            result = answer_question(
+                question=question,
+                top_k=args.top_k,
+                response_mode=args.response_mode,
+                highlight=args.highlight,
+                session_id=session_id,
+                use_chat_context=args.use_chat_context,
+            )
+        except Exception as e:
+            print(f"助手> [错误] {e}")
+            continue
+
+        answer = (result or {}).get("answer") or ""
+        rewritten_query = (result or {}).get("rewritten_query") or ""
+        confidence = (result or {}).get("confidence")
+
+        print("\n助手>")
+        print(answer or "[无回答]")
+
+        if args.show_meta:
+            print("\n[meta]")
+            print_json(
+                {
+                    "session_id": result.get("session_id"),
+                    "rewritten_query": rewritten_query,
+                    "confidence": confidence,
+                    "source_count": len(result.get("sources") or []),
+                }
+            )
+
+        if args.show_sources:
+            print("\n[sources]")
+            print_json(result.get("sources") or [])
+
+        print("-" * 60)
 
 
 def main():

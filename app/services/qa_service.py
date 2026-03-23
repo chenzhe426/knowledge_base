@@ -426,7 +426,15 @@ def answer_question(
 
     if not session_id:
         session_id = _new_session_id()
-        create_chat_session(session_id=session_id)
+
+
+    session = get_chat_session(session_id)
+    if not session:
+        create_chat_session(
+            session_id=session_id,
+            title=_truncate_text(question, 80),
+            metadata={},
+    )
 
     history = get_chat_messages(session_id, limit=CHAT_HISTORY_LIMIT) if use_chat_context else []
     rewritten_query = rewrite_query_with_history(history, question) if use_chat_context else question
