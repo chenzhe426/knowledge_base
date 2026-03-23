@@ -16,6 +16,7 @@ from qdrant_client.models import (
 )
 
 from app.services.llm_service import get_embedding
+from app.config import EMBEDDING_DIM
 
 
 def _env_str(name: str, default: str = "") -> str:
@@ -107,7 +108,9 @@ class QdrantVectorStore(BaseVectorStore):
         self.api_key = _env_str("QDRANT_API_KEY", "")
         self.collection_name = _env_str("QDRANT_COLLECTION_NAME", "kb_chunks")
         self.vector_name = _env_str("QDRANT_VECTOR_NAME", "dense")
-        self.embedding_dim = _env_int("EMBEDDING_DIM", 1536)
+
+        # 这里不再信任旧的 1536 默认值，优先用 config
+        self.embedding_dim = _env_int("EMBEDDING_DIM", EMBEDDING_DIM)
         self.enabled = bool(self.url)
 
         self.client: QdrantClient | None = None
@@ -117,24 +120,111 @@ class QdrantVectorStore(BaseVectorStore):
                 api_key=self.api_key or None,
             )
 
-    def ensure_collection(self) -> None:
+    def _detect_embedding_dim(self) -> int:
+        """
+        用真实 embedding 自动探测维度。
+        探测失败时，回退到配置值。
+        """
+        try:
+            emb = get_embedding("dimension probe")
+            normalized = _normalize_embedding(emb)
+            if normalized:
+                dim = len(normalized)
+                if dim > 0:
+                    self.embedding_dim = dim
+                    return dim
+        except Exception as e:
+            print(f"[Qdrant] detect embedding dim failed: {e}")
+
+        return int(self.embedding_dim)
+
+    def _get_existing_collection_dim(self) -> int | None:
+        if not self.client:
+            return None
+
+        try:
+            info = self.client.get_collection(self.collection_name)
+        except Exception:
+            return None
+
+        vectors = info.config.params.vectors
+
+        # named vectors
+        if isinstance(vectors, dict):
+            vector_cfg = vectors.get(self.vector_name)
+            if vector_cfg is not None and getattr(vector_cfg, "size", None) is not None:
+                return int(vector_cfg.size)
+
+        # single-vector config fallback
+        if getattr(vectors, "size", None) is not None:
+            return int(vectors.size)
+
+        return None
+
+    def _collection_exists(self) -> bool:
+        if not self.client:
+            return False
+
+        try:
+            collections = self.client.get_collections().collections
+            return any(c.name == self.collection_name for c in collections)
+        except Exception:
+            return False
+
+    def _recreate_collection(self, dim: int) -> None:
         if not self.client:
             return
 
-        collections = self.client.get_collections().collections
-        exists = any(c.name == self.collection_name for c in collections)
-        if exists:
-            return
+        if self._collection_exists():
+            print(
+                f"[Qdrant] recreating collection '{self.collection_name}' "
+                f"with dim={dim}"
+            )
+            self.client.delete_collection(collection_name=self.collection_name)
 
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config={
                 self.vector_name: VectorParams(
-                    size=self.embedding_dim,
+                    size=dim,
                     distance=Distance.COSINE,
                 )
             },
         )
+
+    def ensure_collection(self) -> None:
+        if not self.client:
+            return
+
+        actual_dim = self._detect_embedding_dim()
+        self.embedding_dim = actual_dim
+
+        if not self._collection_exists():
+            print(
+                f"[Qdrant] creating collection '{self.collection_name}' "
+                f"with dim={actual_dim}"
+            )
+            self._recreate_collection(actual_dim)
+            return
+
+        existing_dim = self._get_existing_collection_dim()
+
+        if existing_dim is None:
+            print(
+                f"[Qdrant] unable to read existing dim, recreating "
+                f"'{self.collection_name}' with dim={actual_dim}"
+            )
+            self._recreate_collection(actual_dim)
+            return
+
+        if existing_dim != actual_dim:
+            print(
+                f"[Qdrant] dim mismatch detected for '{self.collection_name}': "
+                f"collection={existing_dim}, embedding={actual_dim}. "
+                f"Recreating collection automatically."
+            )
+            self._recreate_collection(actual_dim)
+            return
 
     def score_candidates(
         self,
@@ -172,9 +262,8 @@ class QdrantVectorStore(BaseVectorStore):
         if not vectors:
             return []
 
-        matrix = np.vstack(vectors)  # [N, D]
-        scores = matrix @ q          # [N]
-
+        matrix = np.vstack(vectors)
+        scores = matrix @ q
         ranked_idx = np.argsort(-scores)[:top_k]
 
         results: list[dict[str, Any]] = []
@@ -271,6 +360,12 @@ class QdrantVectorStore(BaseVectorStore):
             if not normalized:
                 continue
 
+            if len(normalized) != self.embedding_dim:
+                raise ValueError(
+                    f"Embedding dim mismatch for chunk {point_id}: "
+                    f"expected {self.embedding_dim}, got {len(normalized)}"
+                )
+
             payload = {
                 "chunk_id": point_id,
                 "document_id": chunk.get("document_id"),
@@ -337,6 +432,5 @@ class QdrantVectorStore(BaseVectorStore):
             return None
 
         return Filter(must=must_conditions)
-
 
 vector_store = QdrantVectorStore()
