@@ -576,7 +576,7 @@ def _build_lexical_text(doc_title: str, section_path: list[str], heading_buffer:
 def split_blocks_into_chunks(
     doc_title: str,
     blocks: list[dict[str, Any]],
-    max_tokens: int = DEFAULT_CHUNK_SIZE,
+    max_chars: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> list[dict[str, Any]]:
     normalized_blocks = [block_to_dict(b) for b in blocks]
@@ -586,7 +586,6 @@ def split_blocks_into_chunks(
     if not normalized_blocks:
         return []
 
-    max_chars = max_tokens
     overlap_chars = overlap
     chunks: list[dict[str, Any]] = []
 
@@ -812,7 +811,7 @@ def index_document(
     chunks = split_blocks_into_chunks(
         doc_title=title,
         blocks=blocks,
-        max_tokens=chunk_size,
+        max_chars=chunk_size,
         overlap=overlap,
     )
 

@@ -141,7 +141,7 @@ def create_session(req: ChatSessionCreateRequest):
         session_id = create_chat_session(
             session_id=req.session_id,
             title=req.title,
-            metadata_json=req.metadata,
+            metadata=req.metadata,
         )
         session = get_chat_session(session_id)
         if not session:
@@ -151,10 +151,12 @@ def create_session(req: ChatSessionCreateRequest):
             session_id=session.get("session_id"),
             title=session.get("title"),
             summary_text=session.get("summary_text"),
-            metadata=session.get("metadata_json") or {},
+            metadata=session.get("metadata") or session.get("metadata_json") or {},
             created_at=session.get("created_at"),
             updated_at=session.get("updated_at"),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

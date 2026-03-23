@@ -7,14 +7,15 @@ import app.config as config
 from app.services.common import normalize_whitespace
 
 
+
 def _cfg(name: str, default: Any):
     return getattr(config, name, default)
 
 
-OLLAMA_BASE_URL = _cfg("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = _cfg("OLLAMA_MODEL", "qwen2.5:7b")
-OLLAMA_EMBED_MODEL = _cfg("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-REQUEST_TIMEOUT = int(_cfg("OLLAMA_TIMEOUT", 120))
+OLLAMA_BASE_URL = config.OLLAMA_BASE_URL
+OLLAMA_MODEL = config.OLLAMA_MODEL
+OLLAMA_EMBED_MODEL = config.OLLAMA_EMBED_MODEL
+REQUEST_TIMEOUT = int(config.OLLAMA_TIMEOUT)
 
 
 def _post_json(
