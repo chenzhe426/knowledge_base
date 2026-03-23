@@ -2,6 +2,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from typing import Any
+from app.services.vector_store import vector_store
 
 import app.config as config
 from app.db import (
@@ -17,7 +18,6 @@ from app.services.common import (
     safe_json_loads,
     to_float,
 )
-from app.services.llm_service import get_embedding
 
 
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -394,34 +394,13 @@ def _hydrate_candidates(raw_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     return results
 
-
 def _vector_recall_from_candidates(
     query_info: dict[str, Any],
     candidates: list[dict[str, Any]],
     top_k: int,
 ) -> list[dict[str, Any]]:
     query_text = query_info.get("normalized_query", "")
-    if not query_text or not candidates:
-        return []
-
-    query_embedding = get_embedding(query_text)
-    if not query_embedding:
-        return []
-
-    scored: list[dict[str, Any]] = []
-    for cand in candidates:
-        emb = cand.get("embedding") or []
-        if not emb:
-            continue
-
-        item = dict(cand)
-        item["embedding_score"] = cosine_similarity(query_embedding, emb)
-        if item["embedding_score"] > 0:
-            scored.append(item)
-
-    scored.sort(key=lambda x: x.get("embedding_score", 0.0), reverse=True)
-    return scored[:top_k]
-
+    return vector_store.score_candidates(query_text, candidates, top_k)
 
 def _keyword_recall_from_candidates(
     query_info: dict[str, Any],
