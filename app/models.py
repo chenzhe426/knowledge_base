@@ -184,3 +184,6 @@ class ChatSessionResponse(BaseModel):
 class ChatHistoryResponse(BaseModel):
     session: ChatSessionResponse | None = None
     messages: list[ChatMessageItem] = Field(default_factory=list)
+
+class AgentAskRequest(BaseModel):
+    question: str = Field(..., min_length=1, description="User question for the agent.")

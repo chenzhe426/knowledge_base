@@ -104,10 +104,11 @@ def _normalize_blocks(blocks: Any) -> list[dict[str, Any]]:
 def _to_document_import_result(payload: dict[str, Any], doc_id: int) -> dict[str, Any]:
     """
     统一 document import 类接口的 service 输出结构。
-    该结构应可被 DocumentImportResponse 直接接收。
+    对外统一使用 document_id；为兼容旧代码，暂时保留 id。
     """
     return {
-        "id": doc_id,
+        "document_id": doc_id,
+        "id": doc_id,  # backward compatible
         "title": payload["title"],
         "file_path": payload["file_path"],
         "file_type": payload["file_type"],
@@ -219,6 +220,7 @@ def list_documents() -> list[dict[str, Any]]:
 
         results.append(
             {
+                "document_id": row.get("id"),
                 "id": row.get("id"),
                 "title": row.get("title"),
                 "file_path": row.get("file_path"),
@@ -235,6 +237,8 @@ def list_documents() -> list[dict[str, Any]]:
                 "updated_at": row.get("updated_at"),
             }
         )
+
+        
 
     return results
 

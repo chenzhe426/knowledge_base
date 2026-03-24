@@ -155,3 +155,4 @@ QUERY_STOPWORDS = {
 # 其他
 # =========================
 DATA_DIR = os.getenv("DATA_DIR", "data")
+AGENT_TEMPERATURE = float(os.getenv("AGENT_TEMPERATURE", "0"))

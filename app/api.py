@@ -1,4 +1,8 @@
 from contextlib import asynccontextmanager
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, Field
+
+from app.agent.service import agent_ask, agent_ask_stream
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +23,10 @@ from app.models import (
     IndexResponse,
     SummaryRequest,
     SummaryResponse,
+    AgentAskRequest,
 )
+
+
 from app.services import (
     answer_question,
     get_chat_history,
@@ -168,3 +175,25 @@ def chat_history(session_id: str, limit: int = 20):
         return ChatHistoryResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/agent/ask")
+def agent_ask_api(req: AgentAskRequest):
+    return agent_ask(req.question)
+
+
+@app.post("/agent/ask/stream")
+def agent_ask_stream_api(req: AgentAskRequest):
+    return StreamingResponse(
+        agent_ask_stream(req.question),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/demo")
+def agent_demo_page():
+    return FileResponse("app/frontend/index.html")

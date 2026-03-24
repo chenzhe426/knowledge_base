@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Knowledge Base Agent Demo</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 960px;
+      margin: 40px auto;
+      padding: 0 16px;
+      line-height: 1.6;
+    }
+    h1 {
+      margin-bottom: 8px;
+    }
+    .sub {
+      color: #666;
+      margin-bottom: 20px;
+    }
+    textarea {
+      width: 100%;
+      min-height: 100px;
+      padding: 12px;
+      font-size: 15px;
+      box-sizing: border-box;
+    }
+    .row {
+      margin-top: 12px;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 10px 16px;
+      cursor: pointer;
+      border: 1px solid #ccc;
+      background: #f6f6f6;
+      border-radius: 8px;
+    }
+    .panel {
+      margin-top: 20px;
+      padding: 16px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      background: #fafafa;
+    }
+    .label {
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #fff;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #eee;
+      overflow-x: auto;
+    }
+    .muted {
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <h1>Knowledge Base Agent Demo</h1>
+  <div class="sub">支持普通问答与流式问答</div>
+
+  <textarea id="question">FastAPI 的核心特点是什么？</textarea>
+
+  <div class="row">
+    <button onclick="askNormal()">普通请求 /agent/ask</button>
+    <button onclick="askStream()">流式请求 /agent/ask/stream</button>
+    <button onclick="clearOutput()">清空输出</button>
+  </div>
+
+  <div class="panel">
+    <div class="label">最终回答</div>
+    <pre id="answer" class="muted">等待回答...</pre>
+  </div>
+
+  <div class="panel">
+    <div class="label">流式事件 / Agent 过程</div>
+    <pre id="events" class="muted">等待事件...</pre>
+  </div>
+
+  <script>
+    const answerEl = document.getElementById("answer");
+    const eventsEl = document.getElementById("events");
+
+    function clearOutput() {
+      answerEl.textContent = "等待回答...";
+      answerEl.classList.add("muted");
+      eventsEl.textContent = "等待事件...";
+      eventsEl.classList.add("muted");
+    }
+
+    function appendEvent(obj) {
+      if (eventsEl.classList.contains("muted")) {
+        eventsEl.textContent = "";
+        eventsEl.classList.remove("muted");
+      }
+      eventsEl.textContent += JSON.stringify(obj, null, 2) + "\n\n";
+    }
+
+    async function askNormal() {
+      clearOutput();
+      const question = document.getElementById("question").value.trim();
+      if (!question) return;
+
+      const res = await fetch("/agent/ask", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ question })
+      });
+
+      const data = await res.json();
+      answerEl.textContent = data.answer || "";
+      answerEl.classList.remove("muted");
+      appendEvent(data);
+    }
+
+    async function askStream() {
+      clearOutput();
+      const question = document.getElementById("question").value.trim();
+      if (!question) return;
+
+      const res = await fetch("/agent/ask/stream", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ question })
+      });
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data:")) continue;
+
+          const jsonStr = line.slice(5).trim();
+          if (!jsonStr) continue;
+
+          try {
+            const obj = JSON.parse(jsonStr);
+            appendEvent(obj);
+
+            if (obj.type === "final") {
+              answerEl.textContent = obj.answer || "";
+              answerEl.classList.remove("muted");
+            }
+          } catch (e) {
+            appendEvent({ type: "parse_error", raw: jsonStr });
+          }
+        }
+      }
+    }
+  </script>
+</body>
+</html>

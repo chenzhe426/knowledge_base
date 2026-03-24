@@ -872,4 +872,6 @@ def index_document(
         "title": title,
         "chunk_count": len(saved_chunks),
         "chunks": saved_chunks,
+        "vector_count": len(saved_chunks),
+        "status": "indexed",
     }
