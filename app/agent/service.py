@@ -1,9 +1,11 @@
 from __future__ import annotations
-
+import uuid
 import json
-from typing import Any, Dict, Generator, Iterable, List
+from typing import Any, Dict, Generator, List, Optional
 
 from app.agent.agent import create_kb_agent
+
+from app.db import create_chat_session, insert_chat_message, get_chat_messages
 
 
 def _extract_final_text(result: Dict[str, Any]) -> str:
@@ -39,47 +41,99 @@ def _serialize_message(msg: Any) -> Dict[str, Any]:
     return payload
 
 
-def agent_ask(question: str) -> Dict[str, Any]:
-    agent = create_kb_agent()
-    result = agent.invoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": question,
-                }
-            ]
-        }
-    )
-
-    messages = result.get("messages", []) or []
-    return {
-        "ok": True,
-        "question": question,
-        "answer": _extract_final_text(result),
-        "messages": [_serialize_message(m) for m in messages],
-    }
-
-
 def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def agent_ask_stream(question: str) -> Generator[str, None, None]:
-    agent = create_kb_agent()
 
-    yield _sse({"type": "start", "question": question})
+def _ensure_session(session_id: Optional[str]) -> str:
+    if session_id:
+        return session_id
 
-    final_result = agent.invoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": question,
-                }
-            ]
-        }
+    new_session_id = str(uuid.uuid4())
+
+    create_chat_session(
+        session_id=new_session_id,
+        title="Agent Chat",
+        metadata={"source": "agent_demo"},
     )
+
+    return new_session_id
+
+def _history_to_agent_messages(session_id: str, limit: int = 20) -> List[Dict[str, str]]:
+    rows = get_chat_messages(session_id, limit) or []
+    
+
+    agent_messages: List[Dict[str, str]] = []
+    for item in rows:
+        if hasattr(item, "model_dump"):
+            item = item.model_dump()
+        elif not isinstance(item, dict):
+            item = vars(item)
+
+        role = item.get("role")
+        content = item.get("content") or item.get("message") or ""
+        if role in {"user", "assistant"} and content:
+            agent_messages.append({"role": role, "content": content})
+
+    return agent_messages
+
+
+def agent_ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+    resolved_session_id = _ensure_session(session_id)
+    history_messages = _history_to_agent_messages(resolved_session_id, limit=20)
+
+    agent = create_kb_agent()
+    input_messages = history_messages + [{"role": "user", "content": question}]
+
+    result = agent.invoke({"messages": input_messages})
+    final_answer = _extract_final_text(result)
+
+    insert_chat_message(
+        session_id=resolved_session_id,
+        role="user",
+        message=question,
+        )
+    insert_chat_message(
+        session_id=resolved_session_id,
+        role="assistant",
+        message=final_answer,
+        )
+    
+
+    messages = result.get("messages", []) or []
+    return {
+        "ok": True,
+        "session_id": resolved_session_id,
+        "question": question,
+        "answer": answer,
+        "messages": [_serialize_message(m) for m in messages],
+    }
+
+
+def agent_ask_stream(question: str, session_id: Optional[str] = None) -> Generator[str, None, None]:
+    resolved_session_id = _ensure_session(session_id)
+    history_messages = _history_to_agent_messages(resolved_session_id, limit=20)
+
+    agent = create_kb_agent()
+    input_messages = history_messages + [{"role": "user", "content": question}]
+
+    yield _sse({"type": "start", "question": question, "session_id": resolved_session_id})
+
+    final_result = agent.invoke({"messages": input_messages})
+    final_answer = _extract_final_text(final_result)
+
+    
+    insert_chat_message(
+        session_id=resolved_session_id,
+        role="user",
+        message=question,
+        )
+    insert_chat_message(
+        session_id=resolved_session_id,
+        role="assistant",
+        message=final_answer,
+        )
 
     messages = final_result.get("messages", []) or []
 
@@ -94,6 +148,7 @@ def agent_ask_stream(question: str) -> Generator[str, None, None]:
             yield _sse(
                 {
                     "type": "tool_call",
+                    "session_id": resolved_session_id,
                     "message": payload,
                 }
             )
@@ -101,6 +156,7 @@ def agent_ask_stream(question: str) -> Generator[str, None, None]:
             yield _sse(
                 {
                     "type": "tool_result",
+                    "session_id": resolved_session_id,
                     "message": payload,
                 }
             )
@@ -108,6 +164,7 @@ def agent_ask_stream(question: str) -> Generator[str, None, None]:
             yield _sse(
                 {
                     "type": "message",
+                    "session_id": resolved_session_id,
                     "message": payload,
                 }
             )
@@ -115,7 +172,8 @@ def agent_ask_stream(question: str) -> Generator[str, None, None]:
     yield _sse(
         {
             "type": "final",
-            "answer": _extract_final_text(final_result),
+            "session_id": resolved_session_id,
+            "answer": final_answer,
         }
     )
-    yield _sse({"type": "done"})
+    yield _sse({"type": "done", "session_id": resolved_session_id})

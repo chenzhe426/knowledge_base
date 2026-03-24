@@ -43,5 +43,4 @@ def get_chat_history(session_id: str, limit: int = 20) -> dict:
 TOOLS = [
     search_knowledge_base,
     summarize_document,
-    get_chat_history,
 ]

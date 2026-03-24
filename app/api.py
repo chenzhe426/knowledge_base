@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from fastapi.responses import Response
 
 from app.agent.service import agent_ask, agent_ask_stream
 
@@ -178,13 +179,13 @@ def chat_history(session_id: str, limit: int = 20):
 
 @app.post("/agent/ask")
 def agent_ask_api(req: AgentAskRequest):
-    return agent_ask(req.question)
+    return agent_ask(req.question, session_id=req.session_id)
 
 
 @app.post("/agent/ask/stream")
 def agent_ask_stream_api(req: AgentAskRequest):
     return StreamingResponse(
-        agent_ask_stream(req.question),
+        agent_ask_stream(req.question, session_id=req.session_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -197,3 +198,7 @@ def agent_ask_stream_api(req: AgentAskRequest):
 @app.get("/demo")
 def agent_demo_page():
     return FileResponse("app/frontend/index.html")
+
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
