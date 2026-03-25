@@ -1,12 +1,31 @@
+"""
+DOCX parser with full structure preservation.
+
+Each run of the document produces a list of typed blocks (heading,
+paragraph, list_item, table, quote, code) with style metadata.
+The unified ParsedDocument is built from the best-performing strategy.
+"""
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
-from app.ingestion.normalizers import clean_blocks, normalize_text
+from app.ingestion.config import CleaningConfig, DocxParserConfig, ParsingConfig
+from app.ingestion.normalizers import (
+    blocks_to_content,
+    clean_blocks,
+    normalize_text,
+)
 from app.ingestion.parsers.base import BaseParser
 from app.ingestion.schemas import ParsedDocument
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Section path helper
+# ---------------------------------------------------------------------------
 
 
 def _section_path_push(section_stack: list[str], heading_text: str, level: int) -> str:
@@ -16,7 +35,19 @@ def _section_path_push(section_stack: list[str], heading_text: str, level: int) 
     return " > ".join(section_stack)
 
 
-def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
+# ---------------------------------------------------------------------------
+# Strategy 1 – docling (best for complex Word docs)
+# ---------------------------------------------------------------------------
+
+
+def _parse_docx_with_docling(path: Path) -> list[dict[str, Any]]:
+    """Use docling's DOCX support for structured extraction."""
+    from docling.document_converter import DocumentConverter
+
+    converter = DocumentConverter()
+    result = converter.convert(str(path))
+    markdown_text = result.document.export_to_markdown()
+
     lines = normalize_text(markdown_text).split("\n")
     blocks: list[dict[str, Any]] = []
     section_stack: list[str] = []
@@ -32,6 +63,7 @@ def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
                         "type": "paragraph",
                         "text": text,
                         "section_path": " > ".join(section_stack) if section_stack else None,
+                        "parser_source": "docling",
                     }
                 )
             para_buf = []
@@ -41,7 +73,6 @@ def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
         if not s:
             flush_paragraph()
             continue
-
         if s.startswith("#"):
             flush_paragraph()
             level = len(s) - len(s.lstrip("#"))
@@ -53,21 +84,10 @@ def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
                     "text": heading_text,
                     "heading_level": level,
                     "section_path": section_path,
+                    "parser_source": "docling",
                 }
             )
             continue
-
-        if re.match(r"^\s*([-*•]|\d+[.)、])\s+.+$", s):
-            flush_paragraph()
-            blocks.append(
-                {
-                    "type": "list_item",
-                    "text": s,
-                    "section_path": " > ".join(section_stack) if section_stack else None,
-                }
-            )
-            continue
-
         if s.startswith("|") and s.endswith("|"):
             flush_paragraph()
             blocks.append(
@@ -75,32 +95,67 @@ def _docling_markdown_to_blocks(markdown_text: str) -> list[dict[str, Any]]:
                     "type": "table",
                     "text": s,
                     "section_path": " > ".join(section_stack) if section_stack else None,
+                    "parser_source": "docling",
                 }
             )
             continue
-
+        if re.match(r"^\s*([-*•·]|\d+[.)、])\s+.+$", s):
+            flush_paragraph()
+            blocks.append(
+                {
+                    "type": "list_item",
+                    "text": s,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                    "parser_source": "docling",
+                }
+            )
+            continue
         para_buf.append(s)
 
     flush_paragraph()
-    return clean_blocks(blocks)
+    return blocks
 
 
-def _parse_with_docling(path: Path) -> list[dict[str, Any]]:
-    from docling.document_converter import DocumentConverter
-
-    converter = DocumentConverter()
-    result = converter.convert(str(path))
-    markdown_text = result.document.export_to_markdown()
-    return _docling_markdown_to_blocks(markdown_text)
+# ---------------------------------------------------------------------------
+# Strategy 2 – python-docx (reliable fallback)
+# ---------------------------------------------------------------------------
 
 
-def _parse_with_python_docx(path: Path) -> list[dict[str, Any]]:
+def _parse_docx_with_python_docx(
+    path: Path,
+    config: DocxParserConfig,
+) -> list[dict[str, Any]]:
+    """
+    Extract blocks from DOCX using python-docx.
+
+    Style mapping
+    -------------
+    python-docx exposes paragraph styles via ``para.style.name``.
+    We map those to our canonical block types and heading levels.
+    """
     from docx import Document
 
     doc = Document(str(path))
     blocks: list[dict[str, Any]] = []
     section_stack: list[str] = []
 
+    # ---- Document properties (optional) ----
+    core_props: dict[str, str] = {}
+    if config.extract_doc_props:
+        try:
+            cp = doc.core_properties
+            core_props = {
+                k: str(v) for k, v in {
+                    "title": cp.title,
+                    "author": cp.author,
+                    "subject": cp.subject,
+                    "keywords": cp.keywords,
+                }.items() if v
+            }
+        except Exception:
+            pass
+
+    # ---- Extract paragraphs ----
     for i, para in enumerate(doc.paragraphs):
         text = (para.text or "").strip()
         if not text:
@@ -108,15 +163,30 @@ def _parse_with_python_docx(path: Path) -> list[dict[str, Any]]:
 
         style_name = ""
         try:
-            style_name = para.style.name or ""
+            style_name = (para.style.name or "").lower().strip()
         except Exception:
             style_name = ""
 
-        style_lower = style_name.lower()
+        bold = False
+        italic = False
+        try:
+            for run in para.runs:
+                if run.bold:
+                    bold = True
+                if run.italic:
+                    italic = True
+        except Exception:
+            pass
 
-        if style_lower.startswith("heading"):
-            m = re.search(r"heading\s*(\d+)", style_lower)
-            level = int(m.group(1)) if m else 1
+        style_meta = {
+            "style_name": para.style.name if para.style else "",
+            "bold": bold,
+            "italic": italic,
+        }
+
+        # ---- Heading detection via style ----
+        if style_name in config.style_to_level:
+            level = config.style_to_level[style_name]
             section_path = _section_path_push(section_stack, text, level)
             blocks.append(
                 {
@@ -125,59 +195,210 @@ def _parse_with_python_docx(path: Path) -> list[dict[str, Any]]:
                     "heading_level": level,
                     "section_path": section_path,
                     "block_index": i,
+                    "parser_source": "python-docx",
+                    "style_meta": style_meta,
                 }
             )
             continue
 
-        if re.match(r"^\s*([-*•]|\d+[.)、])\s+.+$", text):
+        # Fallback: all-caps short text as potential heading
+        allcaps_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
+        if allcaps_ratio > 0.8 and len(text) < 100 and len(text) > 2:
+            level = 1
+            section_path = _section_path_push(section_stack, text, level)
+            blocks.append(
+                {
+                    "type": "heading",
+                    "text": text,
+                    "heading_level": level,
+                    "section_path": section_path,
+                    "block_index": i,
+                    "parser_source": "python-docx",
+                    "style_meta": style_meta,
+                }
+            )
+            continue
+
+        # ---- List item detection ----
+        if re.match(config.list_pattern, text):
             blocks.append(
                 {
                     "type": "list_item",
                     "text": text,
                     "section_path": " > ".join(section_stack) if section_stack else None,
                     "block_index": i,
+                    "parser_source": "python-docx",
+                    "style_meta": style_meta,
                 }
             )
             continue
 
+        # ---- Quote / blockquote ----
+        if style_name in ("quote", "blockquote", "citation"):
+            blocks.append(
+                {
+                    "type": "quote",
+                    "text": text,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
+                    "block_index": i,
+                    "parser_source": "python-docx",
+                    "style_meta": style_meta,
+                }
+            )
+            continue
+
+        # ---- Regular paragraph ----
         blocks.append(
             {
                 "type": "paragraph",
                 "text": text,
                 "section_path": " > ".join(section_stack) if section_stack else None,
                 "block_index": i,
+                "parser_source": "python-docx",
+                "style_meta": style_meta,
             }
         )
 
-    return clean_blocks(blocks)
+    # ---- Extract tables ----
+    if config.extract_tables:
+        for i, table in enumerate(doc.tables):
+            table_lines: list[str] = []
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                if any(cells):
+                    table_lines.append(" | ".join(cells))
+            if table_lines:
+                blocks.append(
+                    {
+                        "type": "table",
+                        "text": "\n".join(table_lines),
+                        "section_path": " > ".join(section_stack) if section_stack else None,
+                        "block_index": len(doc.paragraphs) + i,
+                        "parser_source": "python-docx",
+                    }
+                )
+
+    return blocks
+
+
+# ---------------------------------------------------------------------------
+# Quality scoring for DOCX (simpler than PDF)
+# ---------------------------------------------------------------------------
+
+
+def _score_docx_blocks(blocks: list[dict[str, Any]]) -> float:
+    """Simple heuristic quality score for DOCX blocks."""
+    if not blocks:
+        return 0.0
+
+    texts = [b.get("text", "") or "" for b in blocks]
+    total_chars = sum(len(t) for t in texts)
+    nonempty = sum(1 for t in texts if t.strip())
+    heading_count = sum(1 for b in blocks if b.get("type") == "heading")
+    table_count = sum(1 for b in blocks if b.get("type") == "table")
+    list_count = sum(1 for b in blocks if b.get("type") == "list_item")
+
+    score = (
+        0.20 * min(total_chars / 3000, 1.0)
+        + 0.20 * min(nonempty / 30, 1.0)
+        + 0.20 * min(heading_count / 5, 1.0)
+        + 0.20 * (1.0 if table_count > 0 else 0.0)
+        + 0.20 * (1.0 if list_count > 0 else 0.0)
+    )
+    return max(0.0, min(1.0, score))
+
+
+# ---------------------------------------------------------------------------
+# DOCX Parser – public interface
+# ---------------------------------------------------------------------------
 
 
 class DocxParser(BaseParser):
+    """
+    Multi-strategy DOCX parser.
+
+    Runs docling (preferred) and python-docx (fallback), scores each result,
+    picks the best, and returns a fully-structured ParsedDocument.
+    """
+
     file_type = "docx"
+
+    def __init__(self, config: ParsingConfig | None = None):
+        self._cfg = config.docx if config else DocxParserConfig()
+        self._clean_cfg = config.cleaning if config else CleaningConfig()
 
     def parse(self, file_path: str | Path) -> ParsedDocument:
         path = Path(file_path)
-        errors: list[str] = []
+        candidates: dict[str, Any] = {}
+        all_errors: list[str] = []
 
-        for parser_name, parser_func in [
-            ("docling", _parse_with_docling),
-            ("python-docx", _parse_with_python_docx),
-        ]:
+        strategies: list[tuple[str, Any]] = [
+            ("docling", _parse_docx_with_docling),
+        ]
+        strategies.append(
+            ("python-docx", lambda p: _parse_docx_with_python_docx(p, self._cfg))
+        )
+
+        for name, fn in strategies:
             try:
-                blocks = parser_func(path)
-                if blocks:
-                    content = "\n\n".join(
-                        b["text"] for b in blocks if b.get("type") != "heading"
-                    ).strip()
-                    return ParsedDocument(
-                        title=path.stem,
-                        content=content,
-                        blocks=blocks,
-                        source_path=str(path),
-                        file_type=self.file_type,
-                        metadata={"parser_used": parser_name, "errors": errors},
-                    )
+                blocks = fn(path)
+                if not blocks:
+                    all_errors.append(f"{name}: no blocks returned")
+                    continue
+                score = _score_docx_blocks(blocks)
+                candidates[name] = {"blocks": blocks, "quality_score": score}
             except Exception as e:
-                errors.append(f"{parser_name}: {e}")
+                all_errors.append(f"{name}: {e}")
 
-        raise RuntimeError(f"failed to parse docx: {path} | errors={errors}")
+        if not candidates:
+            raise RuntimeError(
+                f"all DOCX parsers failed for {path}. Errors: {all_errors}"
+            )
+
+        # Select best
+        best_name = max(candidates, key=lambda k: candidates[k]["quality_score"])
+        best = candidates[best_name]
+        blocks = best["blocks"]
+
+        if self._cfg.verbose:
+            logger.info(
+                "[DocxParser] strategy scores – %s",
+                {k: v["quality_score"] for k, v in candidates.items()},
+            )
+
+        # Tag blocks
+        for block in blocks:
+            block["source_format"] = "docx"
+
+        cleaned_blocks = clean_blocks(blocks, self._clean_cfg)
+        for b in cleaned_blocks:
+            b.setdefault("source_format", "docx")
+
+        content = blocks_to_content(
+            cleaned_blocks,
+            include_headings=self._clean_cfg.include_headings_in_content,
+        )
+
+        table_count = sum(1 for b in cleaned_blocks if b.get("type") == "table")
+        heading_count = sum(1 for b in cleaned_blocks if b.get("type") == "heading")
+
+        metadata = {
+            "parser_used": best_name,
+            "candidate_scores": {k: v["quality_score"] for k, v in candidates.items()},
+            "selection_reason": f"score={best['quality_score']:.3f}",
+            "quality_score": best["quality_score"],
+            "table_count": table_count,
+            "heading_count": heading_count,
+            "source_format": "docx",
+            "source_file": str(path),
+            "errors": all_errors,
+        }
+
+        return ParsedDocument(
+            title=path.stem,
+            content=content,
+            blocks=cleaned_blocks,
+            source_path=str(path),
+            file_type=self.file_type,
+            metadata=metadata,
+        )

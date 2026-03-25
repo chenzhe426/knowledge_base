@@ -177,8 +177,19 @@ def import_single_document(file_path: str) -> dict[str, Any]:
     if not parsed_doc:
         raise ValueError(f"failed to parse document: {file_path}")
 
+    # Detect scanned / image-only PDFs that have no extractable text
+    is_scanned = parsed_doc.metadata.get("likely_scanned_pdf", False)
+    ocr_hint = parsed_doc.metadata.get("hint", "")
+
     payload = parsed_document_to_db_payload(parsed_doc, source_path=str(path))
-    if not payload["content"] and not payload["raw_text"]:
+    has_content = bool(payload.get("content") or payload.get("raw_text"))
+
+    if not has_content:
+        if is_scanned:
+            raise ValueError(
+                f"document appears to be a scanned/image PDF with no extractable text "
+                f"(likely_scanned_pdf=true). {ocr_hint}"
+            )
         raise ValueError(f"document has no content: {file_path}")
 
     doc_id = insert_document(**payload)
@@ -201,6 +212,13 @@ def import_documents(folder: str) -> list[dict[str, Any]]:
         payload = parsed_document_to_db_payload(parsed_doc, source_path=source_path)
 
         if not payload["content"] and not payload["raw_text"]:
+            is_scanned = parsed_doc.metadata.get("likely_scanned_pdf", False)
+            if is_scanned:
+                import logging
+                logging.warning(
+                    "[import] skipping scanned/image PDF with no extractable text: %s",
+                    source_path,
+                )
             continue
 
         doc_id = insert_document(**payload)

@@ -79,6 +79,12 @@ score = 0.45 × embedding + 0.20 × keyword + 0.15 × title + 0.10 × section + 
 
 支持格式：PDF、DOCX、TXT
 
+### 文档解析架构
+
+详见 [docs/parser_architecture.md](docs/parser_architecture.md)。
+
+文档解析支持多策略自动选择（PDF）、质量评分、噪声清洗、表格保留、段落重建等能力。
+
 ---
 
 ## 快速开始
