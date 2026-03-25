@@ -56,13 +56,23 @@ def _normalize_chunk_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
 
     normalized = dict(row)
 
+    # Normalize doc_title -> title
+    if "doc_title" in normalized:
+        normalized["title"] = normalized.pop("doc_title")
+    elif "title" not in normalized:
+        normalized["title"] = ""
+
+    # Normalize content/chunk_text
     if "chunk_text" not in normalized:
         normalized["chunk_text"] = normalized.get("content", "")
     if "content" not in normalized:
         normalized["content"] = normalized.get("chunk_text", "")
 
-    if "metadata_json" not in normalized:
-        normalized["metadata_json"] = normalized.get("metadata") or {}
+    # Normalize metadata_json -> metadata (strip _json suffix)
+    if "metadata_json" in normalized:
+        normalized["metadata"] = normalized.pop("metadata_json")
+    elif "metadata" not in normalized:
+        normalized["metadata"] = {}
 
     if "search_text" not in normalized:
         normalized["search_text"] = normalized.get("chunk_text", "")
@@ -119,7 +129,7 @@ def ensure_chunk_search_indexes() -> None:
                 ADD FULLTEXT INDEX ft_chunks_lexical (
                     lexical_text,
                     search_text,
-                    doc_title,
+                    title,
                     section_title
                 )
                 """
@@ -140,7 +150,7 @@ def insert_chunk(
     metadata_json: dict[str, Any] | list[Any] | str | None = None,
     search_text: str | None = None,
     lexical_text: str | None = None,
-    doc_title: str | None = None,
+    title: str | None = None,
     section_title: str | None = None,
     token_count: int | None = None,
     chunk_hash: str | None = None,
@@ -171,7 +181,7 @@ def insert_chunk(
         add_if_exists("metadata_json", metadata_json, json_dump=not isinstance(metadata_json, str))
         add_if_exists("search_text", search_text)
         add_if_exists("lexical_text", lexical_text)
-        add_if_exists("doc_title", doc_title)
+        add_if_exists("title", title)
         add_if_exists("section_title", section_title)
         add_if_exists("token_count", token_count)
         add_if_exists("chunk_hash", chunk_hash)
@@ -242,7 +252,7 @@ def _select_chunk_columns_sql(cursor) -> str:
                 lexical_text,
                 embedding,
                 chunk_type,
-                doc_title,
+                title,
                 section_title,
                 section_path,
                 page_start,
@@ -269,7 +279,7 @@ def _select_chunk_columns_sql(cursor) -> str:
             lexical_text,
             embedding,
             chunk_type,
-            doc_title,
+            title,
             section_title,
             section_path,
             page_start,
@@ -352,7 +362,7 @@ def search_chunks_fulltext(
 
     with get_cursor() as (_, cursor):
         where_clauses = [
-            "MATCH(lexical_text, search_text, doc_title, section_title) AGAINST (%s IN NATURAL LANGUAGE MODE)"
+            "MATCH(lexical_text, search_text, title, section_title) AGAINST (%s IN NATURAL LANGUAGE MODE)"
         ]
         params: list[Any] = [query_text]
 
@@ -368,14 +378,14 @@ def search_chunks_fulltext(
                 id,
                 document_id,
                 chunk_index,
-                doc_title,
+                title,
                 section_title,
                 section_path,
                 chunk_type,
                 page_start,
                 page_end,
                 token_count,
-                MATCH(lexical_text, search_text, doc_title, section_title)
+                MATCH(lexical_text, search_text, title, section_title)
                     AGAINST (%s IN NATURAL LANGUAGE MODE) AS lexical_score
             FROM document_chunks
             WHERE {" AND ".join(where_clauses)}
@@ -404,7 +414,7 @@ def search_chunks_boolean(
 
     with get_cursor() as (_, cursor):
         where_clauses = [
-            "MATCH(lexical_text, search_text, doc_title, section_title) AGAINST (%s IN BOOLEAN MODE)"
+            "MATCH(lexical_text, search_text, title, section_title) AGAINST (%s IN BOOLEAN MODE)"
         ]
         params: list[Any] = [boolean_query]
 
@@ -420,14 +430,14 @@ def search_chunks_boolean(
                 id,
                 document_id,
                 chunk_index,
-                doc_title,
+                title,
                 section_title,
                 section_path,
                 chunk_type,
                 page_start,
                 page_end,
                 token_count,
-                MATCH(lexical_text, search_text, doc_title, section_title)
+                MATCH(lexical_text, search_text, title, section_title)
                     AGAINST (%s IN BOOLEAN MODE) AS lexical_score
             FROM document_chunks
             WHERE {" AND ".join(where_clauses)}

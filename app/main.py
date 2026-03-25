@@ -108,7 +108,7 @@ def cmd_chunks(args):
                 "document_id": row.get("document_id"),
                 "chunk_index": row.get("chunk_index"),
                 "chunk_type": row.get("chunk_type"),
-                "doc_title": row.get("doc_title"),
+                "title": row.get("title"),
                 "section_title": row.get("section_title"),
                 "section_path": format_section_path(row.get("section_path")),
                 "page_range": format_page_range(row.get("page_start"), row.get("page_end")),

@@ -57,7 +57,7 @@ def _call_insert_chunk(payload: dict[str, Any]) -> Any:
             "metadata_json",
             "search_text",
             "lexical_text",
-            "doc_title",
+            "title",
             "section_title",
             "token_count",
             "chunk_hash",
@@ -94,7 +94,7 @@ def _maybe_upsert_vector_index(
         "chunk_id": int(chunk_id),
         "document_id": document_id,
         "chunk_index": chunk_index,
-        "doc_title": chunk.get("doc_title", ""),
+        "doc_title": chunk.get("title", ""),
         "section_title": chunk.get("section_title", ""),
         "section_path": section_path_to_str(chunk.get("section_path")),
         "page_start": chunk.get("page_start"),
@@ -543,12 +543,12 @@ def _build_chunk_prefix(section_path: list[str], heading_buffer: list[str]) -> s
     return "\n".join(parts).strip()
 
 
-def _build_search_text(doc_title: str, section_path: list[str], heading_buffer: list[str], body_text: str) -> str:
+def _build_search_text(title: str, section_path: list[str], heading_buffer: list[str], body_text: str) -> str:
     parts: list[str] = []
 
-    doc_title = normalize_whitespace(doc_title)
-    if doc_title:
-        parts.append(f"文档：{doc_title}")
+    title = normalize_whitespace(title)
+    if title:
+        parts.append(f"文档：{title}")
 
     prefix = _build_chunk_prefix(section_path, heading_buffer)
     if prefix:
@@ -561,10 +561,10 @@ def _build_search_text(doc_title: str, section_path: list[str], heading_buffer: 
     return "\n".join(parts).strip()
 
 
-def _build_lexical_text(doc_title: str, section_path: list[str], heading_buffer: list[str], body_text: str) -> str:
+def _build_lexical_text(title: str, section_path: list[str], heading_buffer: list[str], body_text: str) -> str:
     raw = " ".join(
         [
-            normalize_whitespace(doc_title),
+            normalize_whitespace(title),
             section_path_to_str(section_path),
             " ".join(heading_buffer[-3:]) if heading_buffer else "",
             normalize_whitespace(body_text),
@@ -574,7 +574,7 @@ def _build_lexical_text(doc_title: str, section_path: list[str], heading_buffer:
 
 
 def split_blocks_into_chunks(
-    doc_title: str,
+    title: str,
     blocks: list[dict[str, Any]],
     max_chars: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
@@ -621,13 +621,13 @@ def split_blocks_into_chunks(
             chunk_type = list(unique_types)[0]
 
         search_text = _build_search_text(
-            doc_title=doc_title,
+            title=title,
             section_path=current_section_path,
             heading_buffer=current_heading_buffer,
             body_text=body_text,
         )
         lexical_text = _build_lexical_text(
-            doc_title=doc_title,
+            title=title,
             section_path=current_section_path,
             heading_buffer=current_heading_buffer,
             body_text=body_text,
@@ -635,7 +635,7 @@ def split_blocks_into_chunks(
 
         chunks.append(
             {
-                "doc_title": doc_title,
+                "title": title,
                 "chunk_text": body_text,
                 "search_text": search_text,
                 "lexical_text": lexical_text,
@@ -690,7 +690,7 @@ def split_blocks_into_chunks(
             continue
 
         estimated_search_text = _build_search_text(
-            doc_title=doc_title,
+            title=title,
             section_path=section_path,
             heading_buffer=current_heading_buffer,
             body_text=btext,
@@ -703,7 +703,7 @@ def split_blocks_into_chunks(
             for sub_idx, sub_text in enumerate(sub_chunks):
                 chunks.append(
                     {
-                        "doc_title": doc_title,
+                        "title": title,
                         "chunk_text": btext,
                         "search_text": sub_text,
                         "lexical_text": _normalize_lexical_text(sub_text),
@@ -732,7 +732,7 @@ def split_blocks_into_chunks(
             continue
 
         current_prefix_text = _build_search_text(
-            doc_title=doc_title,
+            title=title,
             section_path=current_section_path if current_texts else section_path,
             heading_buffer=current_heading_buffer,
             body_text="\n".join(current_texts + [btext]),
@@ -809,7 +809,7 @@ def index_document(
     _maybe_delete_vector_index(document_id)
 
     chunks = split_blocks_into_chunks(
-        doc_title=title,
+        title=title,
         blocks=blocks,
         max_chars=chunk_size,
         overlap=overlap,
@@ -827,7 +827,7 @@ def index_document(
 
         embedding = get_embedding(search_text)
         metadata = {
-            "doc_title": chunk.get("doc_title"),
+            "title": chunk.get("title"),
             "section_title": chunk.get("section_title"),
             **(chunk.get("metadata") or {}),
         }
@@ -845,7 +845,7 @@ def index_document(
             "block_start_index": chunk.get("block_start_index"),
             "block_end_index": chunk.get("block_end_index"),
             "chunk_type": chunk.get("chunk_type"),
-            "doc_title": chunk.get("doc_title"),
+            "title": chunk.get("title"),
             "section_title": chunk.get("section_title"),
             "token_count": chunk.get("token_count", 0),
             "chunk_hash": chunk.get("chunk_hash"),

@@ -32,7 +32,7 @@ class ChunkResult(BaseModel):
     section_match_score: float | None = None
     coverage_score: float | None = None
     matched_term_count: int | None = None
-    doc_title: str = ""
+    title: str = ""
     section_title: str = ""
     section_path: str = ""
     page_start: int | None = None
@@ -53,7 +53,7 @@ class SourceHighlightSpan(BaseModel):
 class AnswerSource(BaseModel):
     chunk_id: int | None = None
     document_id: int | None = None
-    doc_title: str = ""
+    title: str = ""
     section_title: str = ""
     section_path: str = ""
     page_start: int | None = None

@@ -46,7 +46,7 @@ def init_schema(cursor) -> None:
             lexical_text LONGTEXT NULL,
             embedding LONGTEXT NULL,
             chunk_type VARCHAR(64) NULL,
-            doc_title VARCHAR(255) NULL,
+            title VARCHAR(255) NULL,
             section_title VARCHAR(255) NULL,
             section_path JSON NULL,
             page_start INT NULL,
@@ -64,7 +64,7 @@ def init_schema(cursor) -> None:
             INDEX idx_chunks_document_chunk (document_id, chunk_index),
             INDEX idx_chunks_chunk_hash (chunk_hash),
             CONSTRAINT fk_chunks_document FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
-            FULLTEXT KEY ft_chunks_lexical (lexical_text, search_text, doc_title, section_title)
+            FULLTEXT KEY ft_chunks_lexical (lexical_text, search_text, title, section_title)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )

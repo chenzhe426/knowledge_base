@@ -168,3 +168,84 @@ class KBSearchKnowledgeBaseOutput(BaseModel):
     top_k: int
     count: int
     hits: List[SearchHit] = Field(default_factory=list)
+
+
+# -------------------------
+# QA / RAG tool schemas
+# -------------------------
+
+class SourceHighlightSpan(BaseModel):
+    start: int
+    end: int
+    text: str
+
+
+class AnswerSource(BaseModel):
+    chunk_id: int | None = None
+    document_id: int | None = None
+    title: str = ""
+    section_title: str = ""
+    section_path: str = ""
+    page_start: int | None = None
+    page_end: int | None = None
+    quote: str = ""
+    score: float | None = None
+    highlight_spans: List[SourceHighlightSpan] = Field(default_factory=list)
+
+
+class KBRewriteQueryInput(BaseModel):
+    question: str = Field(..., min_length=1, description="User question to rewrite.")
+    session_id: str | None = Field(default=None, description="Chat session ID for history context.")
+    use_history: bool = Field(default=True, description="Whether to include chat history in rewriting.")
+
+
+class KBRewriteQueryOutput(BaseModel):
+    original_question: str
+    rewritten_query: str
+    used_history: bool
+
+
+class KBAssembleContextInput(BaseModel):
+    hits: List[SearchHit] = Field(..., description="Retrieved search hits to assemble into context.")
+    max_chunks: int = Field(default=6, ge=1, le=20, description="Maximum number of chunks to include.")
+
+
+class KBAssembleContextOutput(BaseModel):
+    context: str
+    chunk_count: int
+    sources: List[AnswerSource] = Field(default_factory=list)
+
+
+class KBGenerateAnswerInput(BaseModel):
+    question: str = Field(..., min_length=1, description="User question.")
+    context: str = Field(..., description="Assembled context from knowledge base.")
+    history_text: str = Field(default="", description="Formatted chat history for context.")
+    response_mode: Literal["text", "structured"] = Field(default="text", description="Response format.")
+
+
+class KBGenerateAnswerOutput(BaseModel):
+    answer: str
+    confidence: float | None = None
+    key_points: List[str] = Field(default_factory=list)
+    summary: str = ""
+    sources: List[AnswerSource] = Field(default_factory=list)
+
+
+class KBAnswerQuestionInput(BaseModel):
+    question: str = Field(..., min_length=1, description="User question.")
+    session_id: str | None = Field(default=None, description="Chat session ID.")
+    top_k: int = Field(default=5, ge=1, le=20, description="Number of chunks to retrieve.")
+    response_mode: Literal["text", "structured"] = Field(default="text", description="Response format.")
+    highlight: bool = Field(default=True, description="Whether to highlight source spans.")
+    use_chat_context: bool = Field(default=True, description="Whether to use chat history.")
+
+
+class KBAnswerQuestionOutput(BaseModel):
+    question: str
+    rewritten_query: str
+    answer: str
+    confidence: float | None = None
+    structured: Dict[str, Any] | None = None
+    sources: List[AnswerSource] = Field(default_factory=list)
+    retrieved_chunks: List[SearchHit] = Field(default_factory=list)
+    session_id: str

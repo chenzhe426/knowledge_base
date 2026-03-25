@@ -72,7 +72,7 @@ def _history_to_agent_messages(session_id: str, limit: int = 20) -> List[Dict[st
             item = vars(item)
 
         role = item.get("role")
-        content = item.get("content") or item.get("message") or ""
+        content = item.get("content") or ""
         if role in {"user", "assistant"} and content:
             agent_messages.append({"role": role, "content": content})
 
@@ -106,7 +106,7 @@ def agent_ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]
         "ok": True,
         "session_id": resolved_session_id,
         "question": question,
-        "answer": answer,
+        "answer": final_answer,
         "messages": [_serialize_message(m) for m in messages],
     }
 

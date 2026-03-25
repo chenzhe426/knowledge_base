@@ -167,7 +167,7 @@ def _migration_005_chunk_search_indexes(cursor) -> None:
             ADD FULLTEXT INDEX ft_chunks_lexical (
                 lexical_text,
                 search_text,
-                doc_title,
+                title,
                 section_title
             )
             """

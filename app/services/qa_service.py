@@ -57,7 +57,7 @@ def _normalize_chunk_source(chunk: dict[str, Any]) -> dict[str, Any]:
     return {
         "chunk_id": chunk.get("chunk_id"),
         "document_id": chunk.get("document_id"),
-        "doc_title": chunk.get("doc_title", "") or "",
+        "title": chunk.get("title", "") or "",
         "section_title": chunk.get("section_title", "") or "",
         "section_path": chunk.get("section_path", "") or "",
         "page_start": chunk.get("page_start"),
@@ -153,7 +153,7 @@ def _normalize_retrieved_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
         "section_match_score": to_float(chunk.get("section_match_score")),
         "coverage_score": to_float(chunk.get("coverage_score")),
         "matched_term_count": chunk.get("matched_term_count"),
-        "doc_title": chunk.get("doc_title", "") or "",
+        "title": chunk.get("title", "") or "",
         "section_title": chunk.get("section_title", "") or "",
         "section_path": chunk.get("section_path", "") or "",
         "page_start": chunk.get("page_start"),
@@ -173,7 +173,7 @@ def assemble_context(chunks: list[dict[str, Any]], max_chunks: int = QA_MAX_CONT
     context_parts: list[str] = []
 
     for idx, chunk in enumerate(chunks[:max_chunks], start=1):
-        doc_title = chunk.get("doc_title", "") or ""
+        title = chunk.get("title", "") or ""
         section_title = chunk.get("section_title", "") or ""
         section_path = chunk.get("section_path", "") or ""
         page_label = _page_label(chunk.get("page_start"), chunk.get("page_end"))
@@ -181,7 +181,7 @@ def assemble_context(chunks: list[dict[str, Any]], max_chunks: int = QA_MAX_CONT
 
         part = [
             f"[来源 {idx}]",
-            f"文档：{doc_title or '-'}",
+            f"文档：{title or '-'}",
             f"章节：{section_title or section_path or '-'}",
             f"页码：{page_label}",
             "内容：",
@@ -495,15 +495,15 @@ def answer_question(
         role="user",
         message=question,
         rewritten_query=rewritten_query,
-        metadata_json={"top_k": top_k, "response_mode": response_mode},
+        metadata={"top_k": top_k, "response_mode": response_mode},
     )
     insert_chat_message(
         session_id=session_id,
         role="assistant",
         message=answer_text,
         rewritten_query=rewritten_query,
-        sources_json=sources,
-        metadata_json={"confidence": confidence, "response_mode": response_mode},
+        sources=sources,
+        metadata={"confidence": confidence, "response_mode": response_mode},
     )
 
     session = get_chat_session(session_id)
@@ -557,8 +557,8 @@ def get_chat_history(session_id: str, limit: int = 20) -> dict[str, Any]:
                 "role": msg.get("role"),
                 "message": msg.get("message"),
                 "rewritten_query": msg.get("rewritten_query"),
-                "sources": msg.get("sources_json") or [],
-                "metadata": msg.get("metadata_json") or {},
+                "sources": msg.get("sources") or [],
+                "metadata": msg.get("metadata") or {},
                 "created_at": msg.get("created_at"),
             }
         )
@@ -568,7 +568,7 @@ def get_chat_history(session_id: str, limit: int = 20) -> dict[str, Any]:
             "session_id": safe_get(session, "session_id"),
             "title": safe_get(session, "title"),
             "summary_text": safe_get(session, "summary_text"),
-            "metadata": safe_get(session, "metadata_json", {}) or {},
+            "metadata": safe_get(session, "metadata", {}) or {},
             "created_at": safe_get(session, "created_at"),
             "updated_at": safe_get(session, "updated_at"),
         }

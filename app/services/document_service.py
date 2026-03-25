@@ -214,9 +214,9 @@ def list_documents() -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
     for row in rows:
-        blocks = safe_json_loads(row.get("blocks_json"), default=[]) or []
-        metadata = safe_json_loads(row.get("metadata_json"), default={}) or {}
-        tags = safe_json_loads(row.get("tags_json"), default=[]) or []
+        blocks = row.get("blocks_json") or []
+        metadata = row.get("metadata_json") or {}
+        tags = row.get("tags_json") or []
 
         results.append(
             {
@@ -248,7 +248,7 @@ def get_document_chunks(document_id: int) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
     for row in rows:
-        metadata = safe_json_loads(row.get("metadata_json"), default={}) or {}
+        metadata = row.get("metadata") or {}
         embedding = row.get("embedding")
         if isinstance(embedding, str):
             embedding = safe_json_loads(embedding, default=[])
@@ -263,7 +263,7 @@ def get_document_chunks(document_id: int) -> list[dict[str, Any]]:
                 "lexical_text": row.get("lexical_text"),
                 "embedding": embedding,
                 "chunk_type": row.get("chunk_type"),
-                "doc_title": row.get("doc_title"),
+                "title": row.get("title"),
                 "section_title": row.get("section_title"),
                 "section_path": row.get("section_path"),
                 "page_start": row.get("page_start"),
@@ -272,7 +272,7 @@ def get_document_chunks(document_id: int) -> list[dict[str, Any]]:
                 "block_end_index": row.get("block_end_index"),
                 "token_count": row.get("token_count"),
                 "chunk_hash": row.get("chunk_hash"),
-                "metadata_json": metadata,
+                "metadata": metadata,
                 "created_at": row.get("created_at"),
                 "updated_at": row.get("updated_at"),
             }

@@ -225,7 +225,7 @@ def _safe_section_path(value: Any) -> str:
 
 
 def _row_to_candidate(row: Any) -> dict[str, Any]:
-    metadata = safe_json_loads(safe_get(row, "metadata_json"), default={}) or {}
+    metadata = safe_get(row, "metadata") or {}
     raw_section_path = safe_get(row, "section_path", "")
 
     lexical_text = normalize_whitespace(
@@ -246,10 +246,9 @@ def _row_to_candidate(row: Any) -> dict[str, Any]:
         "search_text": search_text,
         "lexical_text": lexical_text,
         "embedding": normalize_embedding(safe_get(row, "embedding")),
-        "doc_title": normalize_whitespace(
-            safe_get(row, "doc_title")
-            or safe_get(row, "title")
-            or metadata.get("doc_title", "")
+        "title": normalize_whitespace(
+            safe_get(row, "title")
+            or metadata.get("title", "")
         ),
         "section_path": _safe_section_path(raw_section_path),
         "section_title": normalize_whitespace(
@@ -278,14 +277,14 @@ def _row_to_candidate(row: Any) -> dict[str, Any]:
 
 
 def _collect_row_texts(cand: dict[str, Any]) -> dict[str, str]:
-    doc_title = normalize_whitespace(cand.get("doc_title", ""))
+    title = normalize_whitespace(cand.get("title", ""))
     section_title = normalize_whitespace(cand.get("section_title", ""))
     section_path = normalize_whitespace(cand.get("section_path", ""))
     search_text = normalize_whitespace(cand.get("search_text", ""))
     lexical_text = normalize_whitespace(cand.get("lexical_text", ""))
 
     return {
-        "doc_title": doc_title,
+        "title": title,
         "section_title": section_title,
         "section_path": section_path,
         "section_text": normalize_whitespace(" ".join([section_path, section_title])),
@@ -314,7 +313,7 @@ def _compute_keyword_components(query_info: dict[str, Any], cand: dict[str, Any]
                 **body_hit,
             }
 
-        title_hit = _term_occurrence_detail(term, texts["doc_title"])
+        title_hit = _term_occurrence_detail(term, texts["title"])
         if title_hit["score"] > 0:
             title_raw += TITLE_MATCH_WEIGHT + (0.3 if title_hit["whole_word"] else 0.0)
 
@@ -802,7 +801,7 @@ def retrieve_chunks(query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, An
                 "section_match_score": round(to_float(item.get("section_match_score")), 6),
                 "coverage_score": round(to_float(item.get("coverage_score")), 6),
                 "matched_term_count": int(to_float(item.get("matched_term_count"))),
-                "doc_title": item.get("doc_title", ""),
+                "title": item.get("title", ""),
                 "section_path": item.get("section_path", ""),
                 "section_title": item.get("section_title", ""),
                 "page_start": item.get("page_start"),

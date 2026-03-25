@@ -40,11 +40,8 @@ def _with_session_aliases(row: dict[str, Any] | None) -> dict[str, Any] | None:
 
     normalized = dict(row)
 
-    if "metadata_json" not in normalized:
-        normalized["metadata_json"] = normalized.get("metadata") or {}
-
     if "summary_text" not in normalized:
-        metadata = normalized.get("metadata_json") or {}
+        metadata = normalized.get("metadata") or {}
         if isinstance(metadata, dict):
             normalized["summary_text"] = metadata.get("summary_text")
 
@@ -57,6 +54,7 @@ def _with_message_aliases(row: dict[str, Any] | None) -> dict[str, Any] | None:
 
     normalized = dict(row)
 
+    # Normalize message/content - DB uses 'message' column, API uses 'content'
     if "message" not in normalized:
         if "content" in normalized:
             normalized["message"] = normalized["content"]
@@ -66,21 +64,19 @@ def _with_message_aliases(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if "content" not in normalized and "message" in normalized:
         normalized["content"] = normalized["message"]
 
-    metadata = normalized.get("metadata")
-    if "metadata_json" not in normalized:
-        normalized["metadata_json"] = metadata or {}
-
     if "rewritten_query" not in normalized:
-        if isinstance(normalized["metadata_json"], dict):
-            normalized["rewritten_query"] = normalized["metadata_json"].get("rewritten_query")
+        metadata = normalized.get("metadata") or {}
+        if isinstance(metadata, dict):
+            normalized["rewritten_query"] = metadata.get("rewritten_query")
         else:
             normalized["rewritten_query"] = None
 
-    if "sources_json" not in normalized:
-        if isinstance(normalized["metadata_json"], dict):
-            normalized["sources_json"] = normalized["metadata_json"].get("sources_json") or []
+    if "sources" not in normalized:
+        metadata = normalized.get("metadata") or {}
+        if isinstance(metadata, dict):
+            normalized["sources"] = metadata.get("sources") or []
         else:
-            normalized["sources_json"] = []
+            normalized["sources"] = []
 
     return normalized
 
@@ -242,29 +238,29 @@ def insert_chat_message(
     role: str,
     message: str,
     rewritten_query: str | None = None,
-    sources_json: list[dict[str, Any]] | None = None,
-    metadata_json: dict[str, Any] | list[Any] | str | None = None,
+    sources: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | list[Any] | str | None = None,
     citations: list[Any] | dict[str, Any] | None = None,
 ) -> int:
     merged_metadata: Any
 
-    if metadata_json is None:
+    if metadata is None:
         merged_metadata = {}
-    elif isinstance(metadata_json, dict):
-        merged_metadata = dict(metadata_json)
+    elif isinstance(metadata, dict):
+        merged_metadata = dict(metadata)
     else:
-        merged_metadata = metadata_json
+        merged_metadata = metadata
 
     if isinstance(merged_metadata, dict):
         if rewritten_query is not None:
             merged_metadata["rewritten_query"] = rewritten_query
-        if sources_json is not None:
-            merged_metadata["sources_json"] = sources_json
-    elif rewritten_query is not None or sources_json is not None:
+        if sources is not None:
+            merged_metadata["sources"] = sources
+    elif rewritten_query is not None or sources is not None:
         merged_metadata = {
             "raw_metadata": merged_metadata,
             "rewritten_query": rewritten_query,
-            "sources_json": sources_json or [],
+            "sources": sources or [],
         }
 
     with get_cursor(commit=True) as (_, cursor):
