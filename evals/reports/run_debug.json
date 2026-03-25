@@ -1,0 +1,311 @@
+{
+  "run_id": "run_20260325_111217_55662d",
+  "dataset": "kb_eval_seed.jsonl",
+  "config": {
+    "mode": "internal",
+    "top_k": 5,
+    "normalize_text": true,
+    "use_doc_level_fallback": true,
+    "api": {
+      "base_url": "http://127.0.0.1:8000",
+      "timeout": 60
+    }
+  },
+  "generated_at": "2026-03-25T11:13:25.473418+00:00",
+  "summary": {
+    "total": 10,
+    "retrieval_labeled_cases": 0,
+    "retrieval_skipped_cases": 10,
+    "retrieval": {
+      "hit_at_1": 0.0,
+      "hit_at_3": 0.0,
+      "hit_at_5": 0.0,
+      "recall_at_5": 0.0,
+      "mrr": 0.0,
+      "note": "no labeled retrieval cases"
+    },
+    "answer": {
+      "exact": 0,
+      "partial": 4,
+      "wrong": 4,
+      "refuse_correct": 1,
+      "refuse_wrong": 0,
+      "clarify_correct": 0,
+      "clarify_wrong": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "kb_0001",
+      "task_type": "factoid",
+      "difficulty": "easy",
+      "label_status": "unlabeled",
+      "question": "这个项目支持导入哪些文档格式？",
+      "retrieved_chunk_ids": [
+        1,
+        10,
+        2,
+        9,
+        11
+      ],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "知识库中提到该项目当前支持导入的文档格式包括：PDF、Word（.docx）和纯文本格式。此外，还支持通过本地文件夹导入文档，但具体格式仍以上述三种为主。",
+      "answer_label": "partial",
+      "must_include_hit_ratio": 0.6667,
+      "must_not_include_violations": [],
+      "latency_ms": 7975.04,
+      "error": ""
+    },
+    {
+      "id": "kb_0002",
+      "task_type": "factoid",
+      "difficulty": "easy",
+      "label_status": "unlabeled",
+      "question": "混合检索是怎么合并向量检索和关键词检索结果的？",
+      "retrieved_chunk_ids": [],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "知识库中没有足够信息支持该结论。混合检索通常通过以下方式合并结果：1. **得分加权**（如向量相似度与关键词匹配度按比例相加）；2. **排序融合**（如将两种检索结果分别排序后按权重合并）；3. **分层过滤**（先用关键词过滤再用向量检索补充）。具体实现需结合实际系统设计。",
+      "answer_label": "partial",
+      "must_include_hit_ratio": 1.0,
+      "must_not_include_violations": [],
+      "latency_ms": 6702.77,
+      "error": ""
+    },
+    {
+      "id": "kb_0003",
+      "task_type": "yesno",
+      "difficulty": "medium",
+      "label_status": "unanswerable",
+      "question": "系统能否导入 Excel 文件？",
+      "retrieved_chunk_ids": [
+        2,
+        1,
+        3,
+        11,
+        12
+      ],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "知识库中没有足够信息支持该结论。",
+      "answer_label": "refuse_correct",
+      "must_include_hit_ratio": 0.0,
+      "must_not_include_violations": [],
+      "latency_ms": 3810.57,
+      "error": ""
+    },
+    {
+      "id": "kb_0004",
+      "task_type": "factoid",
+      "difficulty": "medium",
+      "label_status": "unlabeled",
+      "question": "/ask 和 /agent/ask 接口有什么区别？",
+      "retrieved_chunk_ids": [
+        12,
+        11,
+        13,
+        18,
+        17
+      ],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "/ask 和 /agent/ask 的区别主要在于是否经过 LangChain Agent 层的处理：\n\n1. **/ask**\n是基础的 RAG 问答接口，直接基于向量检索和知识库回答问题，不涉及 Agent 工具调用。响应通常为普通 HTTP 格式。\n\n2. **/agent/ask**\n通过 LangChain Agent 层调用预定义工具（如 `search_knowledge_base` 和 `summarize_document`），结合对话历史进行多步骤推理。支持两种模式：\n- 普通返回（非流式）\n- SSE 流式返回（通过 `/agent/ask/stream` 实现）\n\n此外，/agent/ask 的回答逻辑会优先使用工具检索知识库，再结合上下文生成答案，而 /ask 更侧重直接的向量检索匹配。",
+      "answer_label": "partial",
+      "must_include_hit_ratio": 1.0,
+      "must_not_include_violations": [],
+      "latency_ms": 8344.17,
+      "error": ""
+    },
+    {
+      "id": "kb_0005",
+      "task_type": "clarify",
+      "difficulty": "medium",
+      "label_status": "unlabeled",
+      "question": "怎么导入文档？",
+      "retrieved_chunk_ids": [
+        2,
+        11,
+        1,
+        3,
+        12
+      ],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "根据知识库内容，文档导入方式及流程如下：\n\n1. **支持格式**：\n- PDF上传\n- Word文档上传\n- 纯文本上传\n- 本地文件夹导入（后续可扩展网页/研报链接）\n\n2. **解析流程**：\n- 通过 `app/ingestion/pipeline.py` 的 `parse_document()` 函数识别文件类型\n- 调用对应解析器：\n- 文本文件：TextParser（拆分标题/段落/列表，维护层级路径）\n- DOCX：优先使用 docling，失败则 python-docx\n- PDF：优先 docling，失败则 pdfplumber\n- 输出统一结构 `ParsedDocument`，包含：\n- 标题（title）\n- 内容（content）\n- 块级数据（blocks）\n- 源路径（source_path）\n- 文件类型（file_type）\n- 元数据（metadata）\n\n3. **导入方式**：\n- CLI：通过 `app/main.py` 初始化数据库并执行导入\n- FastAPI：调用 `/import/folder`（文件夹）或 `/import/file`（单文件）接口\n\n注：解析目标是将文档转化为结构化文本，为后续切分、检索和生成提供基础。",
+      "answer_label": "clarify_wrong",
+      "must_include_hit_ratio": 0.3333,
+      "must_not_include_violations": [],
+      "latency_ms": 10729.72,
+      "error": ""
+    },
+    {
+      "id": "kb_0006",
+      "task_type": "factoid",
+      "difficulty": "easy",
+      "label_status": "unlabeled",
+      "question": "Agent 当前有哪些可用工具？",
+      "retrieved_chunk_ids": [
+        17,
+        16,
+        18
+      ],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "Agent 当前可用工具仅有 `search_knowledge_base`（知识库检索）和 `summarize_document`（文档摘要）。\n其他工具如 `get_chat_history` 虽定义为 LangChain 工具，但未被加入 `TOOLS` 列表，因此 agent 无法调用。",
+      "answer_label": "wrong",
+      "must_include_hit_ratio": 0.2,
+      "must_not_include_violations": [],
+      "latency_ms": 7174.94,
+      "error": ""
+    },
+    {
+      "id": "kb_0007",
+      "task_type": "factoid",
+      "difficulty": "medium",
+      "label_status": "unlabeled",
+      "question": "文档切块时如何保证章节上下文不被打断？",
+      "retrieved_chunk_ids": [],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "知识库中没有足够信息支持该结论。",
+      "answer_label": "wrong",
+      "must_include_hit_ratio": 0.0,
+      "must_not_include_violations": [],
+      "latency_ms": 7160.21,
+      "error": ""
+    },
+    {
+      "id": "kb_0008",
+      "task_type": "factoid",
+      "difficulty": "hard",
+      "label_status": "unlabeled",
+      "question": "那它的向量维度是多少？",
+      "retrieved_chunk_ids": [],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "知识库中没有足够信息支持该结论。请提供具体对象或上下文以便回答。",
+      "answer_label": "wrong",
+      "must_include_hit_ratio": 0.0,
+      "must_not_include_violations": [],
+      "latency_ms": 3118.07,
+      "error": ""
+    },
+    {
+      "id": "kb_0009",
+      "task_type": "factoid",
+      "difficulty": "medium",
+      "label_status": "unlabeled",
+      "question": "检索结果去重的阈值是多少？",
+      "retrieved_chunk_ids": [],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "知识库中没有足够信息支持该结论。",
+      "answer_label": "wrong",
+      "must_include_hit_ratio": 0.0,
+      "must_not_include_violations": [],
+      "latency_ms": 4644.18,
+      "error": ""
+    },
+    {
+      "id": "kb_0010",
+      "task_type": "factoid",
+      "difficulty": "easy",
+      "label_status": "unlabeled",
+      "question": "文档导入的整体流程是什么？",
+      "retrieved_chunk_ids": [
+        1,
+        2,
+        3
+      ],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": [],
+      "retrieval": {
+        "hit_at_1": null,
+        "hit_at_3": null,
+        "hit_at_5": null,
+        "mrr": null,
+        "recall_at_5": null,
+        "skipped": true
+      },
+      "final_answer": "文档导入的整体流程分为以下步骤：\n1. **支持多格式上传**：允许用户上传PDF、Word、纯文本及本地文件夹，后续可扩展网页/研报链接。\n2. **结构化解析**：将文档内容解析为干净、结构化的文本，保留段落边界、标题层级信息（如标题、正文、表格、页码、小节等）。\n3. **基础文本提取**：确保能识别文档类型（如PDF/docx），提取可读文本，为后续切分和处理提供结构化输入。\n\n此流程旨在将原始文档转化为可被系统有效处理的结构化数据，为后续的chunk切分、检索和生成提供基础。",
+      "answer_label": "partial",
+      "must_include_hit_ratio": 0.5,
+      "must_not_include_violations": [],
+      "latency_ms": 7885.8,
+      "error": ""
+    }
+  ]
+}
