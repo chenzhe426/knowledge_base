@@ -1,0 +1,852 @@
+{
+  "coverage_threshold": 0.3,
+  "max_sentences": 3,
+  "results": [
+    {
+      "sample_id": "financebench_id_00222",
+      "question": "Does AMD have a reasonably healthy liquidity profile based on its quick ratio fo",
+      "gold_answer": "Yes. The quick ratio is 1.57, calculated as (cash and cash equivalents+Short term investments+Accoun",
+      "evidence_texts_used": [
+        "Yes.",
+        "The quick ratio is 1.57, calculated as (cash and cash equivalents+Short term investments+Accounts receivable, net+receivables from related parties)/ (current liabilities)."
+      ],
+      "matched_chunks": [],
+      "gold_chunk_ids": [],
+      "gold_doc_ids": []
+    },
+    {
+      "sample_id": "financebench_id_00995",
+      "question": "What are the major products and services that AMD sells as of FY22?",
+      "gold_answer": "AMD sells server microprocessors (CPUs) and graphics processing units (GPUs), data processing units ",
+      "evidence_texts_used": [
+        "AMD sells server microprocessors (CPUs) and graphics processing units (GPUs), data processing units (DPUs), Field Programmable Gate Arrays (FPGAs), and Adaptive System-on-Chip (SoC) products for data centers; CPUs, accelerated processing units (APUs) that integrate CPUs and GPUs, and chipsets for desktop and notebook personal computers; discrete GPUs, and semi-custom SoC products and development services; and embedded CPUs, GPUs, APUs, FPGAs, and Adaptive SoC products."
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 24,
+          "document_id": 1,
+          "chunk_index": 23,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 16. Form 10-K Summary 104",
+          "coverage": 0.9545,
+          "matched_evidence": "AMD sells server microprocessors (CPUs) and graphics processing units (GPUs), data processing units "
+        },
+        {
+          "chunk_id": 25,
+          "document_id": 1,
+          "chunk_index": 24,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 16. Form 10-K Summary 104",
+          "coverage": 0.9545,
+          "matched_evidence": "AMD sells server microprocessors (CPUs) and graphics processing units (GPUs), data processing units "
+        },
+        {
+          "chunk_id": 834,
+          "document_id": 1,
+          "chunk_index": 833,
+          "title": "AMD_2022_10K",
+          "section_title": "LIABILITIES AND STOCKHOLDERS’ EQUITY",
+          "coverage": 0.6591,
+          "matched_evidence": "AMD sells server microprocessors (CPUs) and graphics processing units (GPUs), data processing units "
+        },
+        {
+          "chunk_id": 835,
+          "document_id": 1,
+          "chunk_index": 834,
+          "title": "AMD_2022_10K",
+          "section_title": "LIABILITIES AND STOCKHOLDERS’ EQUITY",
+          "coverage": 0.6591,
+          "matched_evidence": "AMD sells server microprocessors (CPUs) and graphics processing units (GPUs), data processing units "
+        },
+        {
+          "chunk_id": 736,
+          "document_id": 1,
+          "chunk_index": 735,
+          "title": "AMD_2022_10K",
+          "section_title": "LIABILITIES AND STOCKHOLDERS’ EQUITY",
+          "coverage": 0.5909,
+          "matched_evidence": "AMD sells server microprocessors (CPUs) and graphics processing units (GPUs), data processing units "
+        }
+      ],
+      "gold_chunk_ids": [
+        24,
+        25,
+        736,
+        834,
+        835
+      ],
+      "gold_doc_ids": [
+        1
+      ]
+    },
+    {
+      "sample_id": "financebench_id_01198",
+      "question": "What drove revenue change as of the FY22 for AMD?",
+      "gold_answer": "In 2022, AMD reported Higher sales of their EPYC server processors, higher semi-custom product sales",
+      "evidence_texts_used": [
+        "In 2022, AMD reported Higher sales of their EPYC server processors, higher semi-custom product sales, and the inclusion of Xilinx embedded product sales"
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 545,
+          "document_id": 1,
+          "chunk_index": 544,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.7895,
+          "matched_evidence": "In 2022, AMD reported Higher sales of their EPYC server processors, higher semi-custom product sales"
+        },
+        {
+          "chunk_id": 635,
+          "document_id": 1,
+          "chunk_index": 634,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.4737,
+          "matched_evidence": "In 2022, AMD reported Higher sales of their EPYC server processors, higher semi-custom product sales"
+        },
+        {
+          "chunk_id": 50,
+          "document_id": 1,
+          "chunk_index": 49,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 16. Form 10-K Summary 104",
+          "coverage": 0.3684,
+          "matched_evidence": "In 2022, AMD reported Higher sales of their EPYC server processors, higher semi-custom product sales"
+        },
+        {
+          "chunk_id": 108,
+          "document_id": 1,
+          "chunk_index": 107,
+          "title": "AMD_2022_10K",
+          "section_title": "7030 Series Mobile processors built on “Zen 3” core architecture.",
+          "coverage": 0.3684,
+          "matched_evidence": "In 2022, AMD reported Higher sales of their EPYC server processors, higher semi-custom product sales"
+        },
+        {
+          "chunk_id": 558,
+          "document_id": 1,
+          "chunk_index": 558,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.3684,
+          "matched_evidence": "In 2022, AMD reported Higher sales of their EPYC server processors, higher semi-custom product sales"
+        }
+      ],
+      "gold_chunk_ids": [
+        50,
+        108,
+        545,
+        558,
+        635
+      ],
+      "gold_doc_ids": [
+        1
+      ]
+    },
+    {
+      "sample_id": "financebench_id_00917",
+      "question": "What drove operating margin change as of the FY22 for AMD? If operating margin i",
+      "gold_answer": "The decrease in AMD's operating income was primarily driven by amortization of intangible assets ass",
+      "evidence_texts_used": [
+        "The decrease in AMD's operating income was primarily driven by amortization of intangible assets associated with the Xilinx acquisition"
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 547,
+          "document_id": 1,
+          "chunk_index": 546,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.8889,
+          "matched_evidence": "The decrease in AMD's operating income was primarily driven by amortization of intangible assets ass"
+        },
+        {
+          "chunk_id": 546,
+          "document_id": 1,
+          "chunk_index": 545,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.7778,
+          "matched_evidence": "The decrease in AMD's operating income was primarily driven by amortization of intangible assets ass"
+        },
+        {
+          "chunk_id": 651,
+          "document_id": 1,
+          "chunk_index": 650,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.7222,
+          "matched_evidence": "The decrease in AMD's operating income was primarily driven by amortization of intangible assets ass"
+        },
+        {
+          "chunk_id": 729,
+          "document_id": 1,
+          "chunk_index": 728,
+          "title": "AMD_2022_10K",
+          "section_title": "LIABILITIES AND STOCKHOLDERS’ EQUITY",
+          "coverage": 0.5,
+          "matched_evidence": "The decrease in AMD's operating income was primarily driven by amortization of intangible assets ass"
+        },
+        {
+          "chunk_id": 905,
+          "document_id": 1,
+          "chunk_index": 904,
+          "title": "AMD_2022_10K",
+          "section_title": "2028 and thereafter 11,978",
+          "coverage": 0.3889,
+          "matched_evidence": "The decrease in AMD's operating income was primarily driven by amortization of intangible assets ass"
+        }
+      ],
+      "gold_chunk_ids": [
+        546,
+        547,
+        651,
+        729,
+        905
+      ],
+      "gold_doc_ids": [
+        1
+      ]
+    },
+    {
+      "sample_id": "financebench_id_01279",
+      "question": "Among operations, investing, and financing activities, which brought in the most",
+      "gold_answer": "In 2022, AMD brought in the most cashflow from Operations",
+      "evidence_texts_used": [
+        "In 2022, AMD brought in the most cashflow from Operations"
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 567,
+          "document_id": 1,
+          "chunk_index": 566,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.3333,
+          "matched_evidence": "In 2022, AMD brought in the most cashflow from Operations"
+        },
+        {
+          "chunk_id": 79,
+          "document_id": 1,
+          "chunk_index": 78,
+          "title": "AMD_2022_10K",
+          "section_title": "7030 Series Mobile processors built on “Zen 3” core architecture.",
+          "coverage": 0.3333,
+          "matched_evidence": "In 2022, AMD brought in the most cashflow from Operations"
+        },
+        {
+          "chunk_id": 50,
+          "document_id": 1,
+          "chunk_index": 49,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 16. Form 10-K Summary 104",
+          "coverage": 0.3333,
+          "matched_evidence": "In 2022, AMD brought in the most cashflow from Operations"
+        }
+      ],
+      "gold_chunk_ids": [
+        50,
+        79,
+        567
+      ],
+      "gold_doc_ids": [
+        1
+      ]
+    },
+    {
+      "sample_id": "financebench_id_00476",
+      "question": "Which debt securities are registered to trade on a national securities exchange ",
+      "gold_answer": "There are none",
+      "evidence_texts_used": [
+        "There are none"
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 3793,
+          "document_id": 2,
+          "chunk_index": 2468,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "DEFERRALACCOUNT SCHEDULE RATE",
+          "coverage": 0.6667,
+          "matched_evidence": "There are none"
+        },
+        {
+          "chunk_id": 5048,
+          "document_id": 3,
+          "chunk_index": 1120,
+          "title": "BOEING_2022_10K",
+          "section_title": "Item 9A. Controls and Procedures",
+          "coverage": 0.6667,
+          "matched_evidence": "There are none"
+        },
+        {
+          "chunk_id": 5089,
+          "document_id": 3,
+          "chunk_index": 1161,
+          "title": "BOEING_2022_10K",
+          "section_title": "Item 12. Security Ownership of Certain Beneficial Owners and Management and Related Stockholder Matters",
+          "coverage": 0.3333,
+          "matched_evidence": "There are none"
+        },
+        {
+          "chunk_id": 5088,
+          "document_id": 3,
+          "chunk_index": 1160,
+          "title": "BOEING_2022_10K",
+          "section_title": "Item 12. Security Ownership of Certain Beneficial Owners and Management and Related Stockholder Matters",
+          "coverage": 0.3333,
+          "matched_evidence": "There are none"
+        },
+        {
+          "chunk_id": 1415,
+          "document_id": 2,
+          "chunk_index": 90,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "DOCUMENTS INCORPORATED BY REFERENCE",
+          "coverage": 0.3333,
+          "matched_evidence": "There are none"
+        }
+      ],
+      "gold_chunk_ids": [
+        1415,
+        3793,
+        5048,
+        5088,
+        5089
+      ],
+      "gold_doc_ids": [
+        2,
+        3
+      ]
+    },
+    {
+      "sample_id": "financebench_id_01028",
+      "question": "What are the geographies that American Express primarily operates in as of 2022?",
+      "gold_answer": "United States, EMEA, APAC, and LACC",
+      "evidence_texts_used": [
+        "United States, EMEA, APAC, and LACC"
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 2940,
+          "document_id": 2,
+          "chunk_index": 1615,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "GEOGRAPHIC OPERATIONS",
+          "coverage": 0.5,
+          "matched_evidence": "United States, EMEA, APAC, and LACC"
+        },
+        {
+          "chunk_id": 2942,
+          "document_id": 2,
+          "chunk_index": 1617,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "GEOGRAPHIC OPERATIONS",
+          "coverage": 0.5,
+          "matched_evidence": "United States, EMEA, APAC, and LACC"
+        },
+        {
+          "chunk_id": 2941,
+          "document_id": 2,
+          "chunk_index": 1616,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "GEOGRAPHIC OPERATIONS",
+          "coverage": 0.5,
+          "matched_evidence": "United States, EMEA, APAC, and LACC"
+        },
+        {
+          "chunk_id": 3894,
+          "document_id": 2,
+          "chunk_index": 2569,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "SUBSIDIARIES OF AMERICAN EXPRESS COMPANY",
+          "coverage": 0.3333,
+          "matched_evidence": "United States, EMEA, APAC, and LACC"
+        },
+        {
+          "chunk_id": 143,
+          "document_id": 1,
+          "chunk_index": 142,
+          "title": "AMD_2022_10K",
+          "section_title": "7030 Series Mobile processors built on “Zen 3” core architecture.",
+          "coverage": 0.3333,
+          "matched_evidence": "United States, EMEA, APAC, and LACC"
+        }
+      ],
+      "gold_chunk_ids": [
+        143,
+        2940,
+        2941,
+        2942,
+        3894
+      ],
+      "gold_doc_ids": [
+        1,
+        2
+      ]
+    },
+    {
+      "sample_id": "financebench_id_00723",
+      "question": "Does AMEX have an improving operating margin profile as of 2022? If operating ma",
+      "gold_answer": "Performance is not measured through operating margin",
+      "evidence_texts_used": [
+        "Performance is not measured through operating margin"
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 4410,
+          "document_id": 3,
+          "chunk_index": 482,
+          "title": "BOEING_2022_10K",
+          "section_title": "737 MAX customer concessions and consideration 100 600 700",
+          "coverage": 0.5714,
+          "matched_evidence": "Performance is not measured through operating margin"
+        },
+        {
+          "chunk_id": 4404,
+          "document_id": 3,
+          "chunk_index": 476,
+          "title": "BOEING_2022_10K",
+          "section_title": "737 MAX customer concessions and consideration 100 600 700",
+          "coverage": 0.4286,
+          "matched_evidence": "Performance is not measured through operating margin"
+        },
+        {
+          "chunk_id": 2756,
+          "document_id": 2,
+          "chunk_index": 1431,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "DERIVATIVES AND HEDGING ACTIVITIES",
+          "coverage": 0.4286,
+          "matched_evidence": "Performance is not measured through operating margin"
+        }
+      ],
+      "gold_chunk_ids": [
+        2756,
+        4404,
+        4410
+      ],
+      "gold_doc_ids": [
+        2,
+        3
+      ]
+    },
+    {
+      "sample_id": "financebench_id_00720",
+      "question": "What drove gross margin change as of the FY2022 for American Express? If gross m",
+      "gold_answer": "Performance is not measured through gross margin",
+      "evidence_texts_used": [
+        "Performance is not measured through gross margin"
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 650,
+          "document_id": 1,
+          "chunk_index": 649,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.4286,
+          "matched_evidence": "Performance is not measured through gross margin"
+        },
+        {
+          "chunk_id": 2630,
+          "document_id": 2,
+          "chunk_index": 1305,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "INVESTMENT SECURITIES",
+          "coverage": 0.4286,
+          "matched_evidence": "Performance is not measured through gross margin"
+        }
+      ],
+      "gold_chunk_ids": [
+        650,
+        2630
+      ],
+      "gold_doc_ids": [
+        1,
+        2
+      ]
+    },
+    {
+      "sample_id": "financebench_id_01351",
+      "question": "How much has the effective tax rate of American Express changed between FY2021 a",
+      "gold_answer": "The effective tax rate for American Express has changed/dropped from 24.6% in FY 2021 to 21.6% in FY",
+      "evidence_texts_used": [
+        "The effective tax rate for American Express has changed/dropped from 24.6% in FY 2021 to 21.6% in FY 2022."
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 2119,
+          "document_id": 2,
+          "chunk_index": 794,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "TABLE 16: REGULATORY RISK-BASED CAPITALAND LEVERAGE RATIOS",
+          "coverage": 0.3529,
+          "matched_evidence": "The effective tax rate for American Express has changed/dropped from 24.6% in FY 2021 to 21.6% in FY"
+        }
+      ],
+      "gold_chunk_ids": [
+        2119
+      ],
+      "gold_doc_ids": [
+        2
+      ]
+    },
+    {
+      "sample_id": "financebench_id_00517",
+      "question": "Are there any product categories / service categories that represent more than 2",
+      "gold_answer": "Yes. Boeing has product and service categories that represent more than 20% of Boeing's revenue for ",
+      "evidence_texts_used": [
+        "Yes.",
+        "Boeing has product and service categories that represent more than 20% of Boeing's revenue for FY2022.",
+        "These categories are Commercial Airplanes which comprises 39% of total revenue, Defence which comprises 35% of total revenue and Services which comprises 26% of total revenue."
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 2086,
+          "document_id": 2,
+          "chunk_index": 761,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "PROVISIONS FOR CREDIT LOSSES",
+          "coverage": 0.375,
+          "matched_evidence": "Boeing has product and service categories that represent more than 20% of Boeing's revenue for FY202"
+        },
+        {
+          "chunk_id": 2078,
+          "document_id": 2,
+          "chunk_index": 753,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "TOTAL REVENUES NET OF INTEREST EXPENSE",
+          "coverage": 0.375,
+          "matched_evidence": "Boeing has product and service categories that represent more than 20% of Boeing's revenue for FY202"
+        },
+        {
+          "chunk_id": 2875,
+          "document_id": 2,
+          "chunk_index": 1550,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "SERVICE FEES AND OTHER REVENUE AND OTHER EXPENSES",
+          "coverage": 0.375,
+          "matched_evidence": "Boeing has product and service categories that represent more than 20% of Boeing's revenue for FY202"
+        },
+        {
+          "chunk_id": 2101,
+          "document_id": 2,
+          "chunk_index": 776,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "TOTAL REVENUES NET OF INTEREST EXPENSE",
+          "coverage": 0.3125,
+          "matched_evidence": "Boeing has product and service categories that represent more than 20% of Boeing's revenue for FY202"
+        },
+        {
+          "chunk_id": 2037,
+          "document_id": 2,
+          "chunk_index": 712,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "TOTAL REVENUES NET OF INTEREST EXPENSE",
+          "coverage": 0.3125,
+          "matched_evidence": "Boeing has product and service categories that represent more than 20% of Boeing's revenue for FY202"
+        }
+      ],
+      "gold_chunk_ids": [
+        2037,
+        2078,
+        2086,
+        2101,
+        2875
+      ],
+      "gold_doc_ids": [
+        2
+      ]
+    },
+    {
+      "sample_id": "financebench_id_01091",
+      "question": "Has Boeing reported any materially important ongoing legal battles from FY2022?",
+      "gold_answer": "Yes. Multiple lawsuits have been filed against Boeing resulting from a 2018 Lion Air crash and a 201",
+      "evidence_texts_used": [
+        "Yes.",
+        "Multiple lawsuits have been filed against Boeing resulting from a 2018 Lion Air crash and a 2019 Ethiopian Airlines crash."
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 4945,
+          "document_id": 3,
+          "chunk_index": 1017,
+          "title": "BOEING_2022_10K",
+          "section_title": "2022 2021 2022 2021 2022 2021",
+          "coverage": 0.7368,
+          "matched_evidence": "Multiple lawsuits have been filed against Boeing resulting from a 2018 Lion Air crash and a 2019 Eth"
+        },
+        {
+          "chunk_id": 4121,
+          "document_id": 3,
+          "chunk_index": 193,
+          "title": "BOEING_2022_10K",
+          "section_title": "Item 1A. Risk Factors",
+          "coverage": 0.4737,
+          "matched_evidence": "Multiple lawsuits have been filed against Boeing resulting from a 2018 Lion Air crash and a 2019 Eth"
+        }
+      ],
+      "gold_chunk_ids": [
+        4121,
+        4945
+      ],
+      "gold_doc_ids": [
+        3
+      ]
+    },
+    {
+      "sample_id": "financebench_id_00678",
+      "question": "Does Boeing have an improving gross margin profile as of FY2022? If gross margin",
+      "gold_answer": "Yes. Boeing has an improving gross margin profile as of FY2022. Gross profit improved from $3,017 mi",
+      "evidence_texts_used": [
+        "Yes.",
+        "Boeing has an improving gross margin profile as of FY2022.",
+        "Gross profit improved from $3,017 million in FY2021 to $3,502 million in FY2022."
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 546,
+          "document_id": 1,
+          "chunk_index": 545,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.5,
+          "matched_evidence": "Boeing has an improving gross margin profile as of FY2022."
+        },
+        {
+          "chunk_id": 650,
+          "document_id": 1,
+          "chunk_index": 649,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 7. MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS",
+          "coverage": 0.4,
+          "matched_evidence": "Boeing has an improving gross margin profile as of FY2022."
+        },
+        {
+          "chunk_id": 5512,
+          "document_id": 3,
+          "chunk_index": 1584,
+          "title": "BOEING_2022_10K",
+          "section_title": "10.11 Recovery of Plan Overpayments",
+          "coverage": 0.4,
+          "matched_evidence": "Boeing has an improving gross margin profile as of FY2022."
+        },
+        {
+          "chunk_id": 2630,
+          "document_id": 2,
+          "chunk_index": 1305,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "INVESTMENT SECURITIES",
+          "coverage": 0.4,
+          "matched_evidence": "Boeing has an improving gross margin profile as of FY2022."
+        },
+        {
+          "chunk_id": 5513,
+          "document_id": 3,
+          "chunk_index": 1585,
+          "title": "BOEING_2022_10K",
+          "section_title": "10.11 Recovery of Plan Overpayments",
+          "coverage": 0.4,
+          "matched_evidence": "Boeing has an improving gross margin profile as of FY2022."
+        },
+        {
+          "chunk_id": 4442,
+          "document_id": 3,
+          "chunk_index": 514,
+          "title": "BOEING_2022_10K",
+          "section_title": "737 MAX customer concessions and consideration 100 600 700",
+          "coverage": 0.3636,
+          "matched_evidence": "Gross profit improved from $3,017 million in FY2021 to $3,502 million in FY2022."
+        }
+      ],
+      "gold_chunk_ids": [
+        546,
+        650,
+        2630,
+        4442,
+        5512,
+        5513
+      ],
+      "gold_doc_ids": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "sample_id": "financebench_id_01290",
+      "question": "Who are the primary customers of Boeing as of FY2022?",
+      "gold_answer": "Boeing's primary customers as of FY2022 are a limited number of commercial airlines and the US gover",
+      "evidence_texts_used": [
+        "Boeing's primary customers as of FY2022 are a limited number of commercial airlines and the US government.",
+        "The US government accounted for 40% of Boeing's total revenues in FY2022."
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 4001,
+          "document_id": 3,
+          "chunk_index": 73,
+          "title": "BOEING_2022_10K",
+          "section_title": "Item 1A. Risk Factors",
+          "coverage": 0.4375,
+          "matched_evidence": "Boeing's primary customers as of FY2022 are a limited number of commercial airlines and the US gover"
+        },
+        {
+          "chunk_id": 4328,
+          "document_id": 3,
+          "chunk_index": 400,
+          "title": "BOEING_2022_10K",
+          "section_title": "737 747 767 777 777X 787 †",
+          "coverage": 0.4375,
+          "matched_evidence": "Boeing's primary customers as of FY2022 are a limited number of commercial airlines and the US gover"
+        },
+        {
+          "chunk_id": 4983,
+          "document_id": 3,
+          "chunk_index": 1055,
+          "title": "BOEING_2022_10K",
+          "section_title": "2022 2021 2022 2021 2022 2021",
+          "coverage": 0.375,
+          "matched_evidence": "Boeing's primary customers as of FY2022 are a limited number of commercial airlines and the US gover"
+        },
+        {
+          "chunk_id": 5512,
+          "document_id": 3,
+          "chunk_index": 1584,
+          "title": "BOEING_2022_10K",
+          "section_title": "10.11 Recovery of Plan Overpayments",
+          "coverage": 0.3125,
+          "matched_evidence": "Boeing's primary customers as of FY2022 are a limited number of commercial airlines and the US gover"
+        },
+        {
+          "chunk_id": 5513,
+          "document_id": 3,
+          "chunk_index": 1585,
+          "title": "BOEING_2022_10K",
+          "section_title": "10.11 Recovery of Plan Overpayments",
+          "coverage": 0.3125,
+          "matched_evidence": "Boeing's primary customers as of FY2022 are a limited number of commercial airlines and the US gover"
+        },
+        {
+          "chunk_id": 4966,
+          "document_id": 3,
+          "chunk_index": 1038,
+          "title": "BOEING_2022_10K",
+          "section_title": "2022 2021 2022 2021 2022 2021",
+          "coverage": 0.5,
+          "matched_evidence": "The US government accounted for 40% of Boeing's total revenues in FY2022."
+        },
+        {
+          "chunk_id": 4963,
+          "document_id": 3,
+          "chunk_index": 1035,
+          "title": "BOEING_2022_10K",
+          "section_title": "2022 2021 2022 2021 2022 2021",
+          "coverage": 0.5,
+          "matched_evidence": "The US government accounted for 40% of Boeing's total revenues in FY2022."
+        },
+        {
+          "chunk_id": 4333,
+          "document_id": 3,
+          "chunk_index": 405,
+          "title": "BOEING_2022_10K",
+          "section_title": "737 747 767 777 777X 787 †",
+          "coverage": 0.5,
+          "matched_evidence": "The US government accounted for 40% of Boeing's total revenues in FY2022."
+        },
+        {
+          "chunk_id": 4715,
+          "document_id": 3,
+          "chunk_index": 787,
+          "title": "BOEING_2022_10K",
+          "section_title": "757 Aircraft (Accounted for as sales-type/finance leases) 107 126",
+          "coverage": 0.4167,
+          "matched_evidence": "The US government accounted for 40% of Boeing's total revenues in FY2022."
+        }
+      ],
+      "gold_chunk_ids": [
+        4001,
+        4328,
+        4333,
+        4715,
+        4963,
+        4966,
+        4983,
+        5512,
+        5513
+      ],
+      "gold_doc_ids": [
+        3
+      ]
+    },
+    {
+      "sample_id": "financebench_id_00464",
+      "question": "Is Boeing's business subject to cyclicality?",
+      "gold_answer": "Yes, Boeing's business is subject to cyclicality due to its exposure to the airline industry which i",
+      "evidence_texts_used": [
+        "Yes, Boeing's business is subject to cyclicality due to its exposure to the airline industry which is a cyclical industry."
+      ],
+      "matched_chunks": [
+        {
+          "chunk_id": 2214,
+          "document_id": 2,
+          "chunk_index": 889,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "CREDIT RISK MANAGEMENT PROCESS",
+          "coverage": 0.5294,
+          "matched_evidence": "Yes, Boeing's business is subject to cyclicality due to its exposure to the airline industry which i"
+        },
+        {
+          "chunk_id": 3996,
+          "document_id": 3,
+          "chunk_index": 68,
+          "title": "BOEING_2022_10K",
+          "section_title": "Item 1A. Risk Factors",
+          "coverage": 0.4118,
+          "matched_evidence": "Yes, Boeing's business is subject to cyclicality due to its exposure to the airline industry which i"
+        },
+        {
+          "chunk_id": 1660,
+          "document_id": 2,
+          "chunk_index": 335,
+          "title": "AMERICANEXPRESS_2022_10K",
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "coverage": 0.4118,
+          "matched_evidence": "Yes, Boeing's business is subject to cyclicality due to its exposure to the airline industry which i"
+        },
+        {
+          "chunk_id": 212,
+          "document_id": 1,
+          "chunk_index": 211,
+          "title": "AMD_2022_10K",
+          "section_title": "ITEM 1A. RISK FACTORS",
+          "coverage": 0.4118,
+          "matched_evidence": "Yes, Boeing's business is subject to cyclicality due to its exposure to the airline industry which i"
+        },
+        {
+          "chunk_id": 4230,
+          "document_id": 3,
+          "chunk_index": 302,
+          "title": "BOEING_2022_10K",
+          "section_title": "2021 as a result of higher average debt balances.",
+          "coverage": 0.3529,
+          "matched_evidence": "Yes, Boeing's business is subject to cyclicality due to its exposure to the airline industry which i"
+        }
+      ],
+      "gold_chunk_ids": [
+        212,
+        1660,
+        2214,
+        3996,
+        4230
+      ],
+      "gold_doc_ids": [
+        1,
+        2,
+        3
+      ]
+    }
+  ]
+}

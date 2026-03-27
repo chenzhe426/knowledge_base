@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 import re
 import traceback
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -31,10 +33,68 @@ from app.ingestion.schemas import ParsedDocument
 
 logger = logging.getLogger(__name__)
 
+# pdfplumber's C extension is not thread-safe; a global lock serializes all
+# pdfplumber calls so that multi-document parallelism (ThreadPoolExecutor in
+# pipeline.py) does not cause segfaults / heap corruption.
+_pdfplumber_lock = threading.RLock()  # RLock allows re-entry from the same thread (nested calls in parse → _analyze_pdf_file → _parse_with_pdfplumber)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+TABLE_PIPE_RE = re.compile(r"\s*\|\s*")
+
+
+def _count_pipe_cols(line: str) -> int | None:
+    """Return number of pipe-separated cells if line has |, else None."""
+    stripped = line.strip()
+    if "|" not in stripped:
+        return None
+    cells = TABLE_PIPE_RE.split(stripped)
+    # Filter empty cells from leading/trailing pipes
+    cells = [c for c in cells if c.strip()]
+    return len(cells) if cells else None
+
+
+def _detect_tables_in_raw_text(raw_text: str) -> tuple[list[list[str]], list[str]]:
+    """Detect table blocks and remaining non-table lines from raw page text.
+
+    Returns:
+        tables: list of tables, each table is a list of row strings "A | B | C"
+        remaining_lines: lines that are not part of any table
+    """
+    lines = raw_text.splitlines()
+    tables: list[list[str]] = []
+    remaining: list[str] = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            remaining.append(lines[i])
+            i += 1
+            continue
+
+        cols = _count_pipe_cols(line)
+        if cols is None or cols < 2:
+            remaining.append(lines[i])
+            i += 1
+            continue
+
+        # Found a table row — collect consecutive rows with same column count
+        table_rows: list[str] = []
+        while i < len(lines) and _count_pipe_cols(lines[i].strip()) == cols:
+            table_rows.append(lines[i].strip())
+            i += 1
+
+        # Require at least 2 rows to be a table (single pipe line = likely formatting)
+        if len(table_rows) >= 2:
+            tables.append(table_rows)
+        else:
+            # Single pipe line → treat as paragraph
+            remaining.extend(table_rows)
+
+    return tables, remaining
 
 
 def _section_path_push(section_stack: list[str], heading_text: str, level: int) -> str:
@@ -162,37 +222,40 @@ def _analyze_pdf_file(path: Path) -> tuple[bool, int, int]:
     """
     Returns:
         (likely_scanned, page_count, file_size_bytes)
+
+    Uses pdfplumber (with the global lock) instead of pypdfium2 to avoid
+    C-extension threading issues when called from multiple workers.
     """
+    import pdfplumber
+
     file_size = path.stat().st_size if path.exists() else 0
-    page_count = 0
 
-    try:
-        import pypdfium2 as pdfium
+    with _pdfplumber_lock:
+        try:
+            with pdfplumber.open(str(path)) as pdf:
+                page_count = len(pdf.pages)
+                if page_count <= 0:
+                    return False, 0, file_size
 
-        pdf = pdfium.PdfDocument(str(path))
-        page_count = len(pdf)
+                avg_bytes_per_page = file_size / page_count
+                likely_by_size = avg_bytes_per_page > 500 * 1024
 
-        if page_count <= 0:
+                has_any_text = False
+                for page in pdf.pages[:3]:
+                    try:
+                        text = page.extract_text() or ""
+                        if text.strip():
+                            has_any_text = True
+                            break
+                    except Exception:
+                        continue
+
+                likely_scanned = likely_by_size and not has_any_text
+                return likely_scanned, page_count, file_size
+
+        except Exception as e:
+            logger.exception("[PdfParser] _analyze_pdf_file failed for %s: %s", path, e)
             return False, 0, file_size
-
-        avg_bytes_per_page = file_size / page_count
-        likely_by_size = avg_bytes_per_page > 500 * 1024
-
-        has_any_text = False
-        for page_idx in range(min(3, page_count)):
-            page = pdf[page_idx]
-            textpage = page.get_textpage()
-            text = textpage.get_text_bounded()
-            if text and text.strip():
-                has_any_text = True
-                break
-
-        likely_scanned = likely_by_size and not has_any_text
-        return likely_scanned, page_count, file_size
-
-    except Exception as e:
-        logger.exception("[PdfParser] _analyze_pdf_file failed for %s: %s", path, e)
-        return False, 0, file_size
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +267,11 @@ def _parse_with_pypdfium2_fasttext(path: Path, config: PdfParserConfig) -> list[
     """
     Fast path:
     - extract full page text using pypdfium2
-    - split into paragraph-like blocks
+    - detect simple pipe-separated tables (|)
+    - split remaining text into paragraph-like blocks
     - lightweight heading detection
+
+    Complex tables (cross-page, merged cells) → pdfplumber fallback.
     """
     import pypdfium2 as pdfium
 
@@ -243,33 +309,54 @@ def _parse_with_pypdfium2_fasttext(path: Path, config: PdfParserConfig) -> list[
             )
             continue
 
-        paragraphs = _split_text_to_paragraphs(raw_text, max_chars=1200)
+        # ── Detect tables (simple pipe-separated format) ────────────────────
+        tables, remaining_lines = _detect_tables_in_raw_text(raw_text)
 
-        for para in paragraphs:
-            para = para.strip()
-            if len(para) < 20:
-                continue
-
-            is_heading, heading_level = _looks_like_heading(para)
-            block_type = "heading" if is_heading else "paragraph"
-
-            section_path = None
-            if block_type == "heading" and heading_level is not None:
-                section_path = _section_path_push(section_stack, para, heading_level)
-            elif section_stack:
-                section_path = " > ".join(section_stack)
-
+        # Emit table blocks
+        for table_rows in tables:
+            table_text = "\n".join(table_rows)
             blocks.append(
                 {
-                    "type": block_type,
-                    "text": para,
+                    "type": "table",
+                    "text": table_text,
                     "page": page_idx + 1,
-                    "heading_level": heading_level,
-                    "section_path": section_path,
+                    "section_path": " > ".join(section_stack) if section_stack else None,
                     "parser_source": "pypdfium2_fasttext",
                     "bbox": (0.0, 0.0, round(page_width, 1), round(page_height, 1)),
                 }
             )
+
+        # Remaining text → paragraphs
+        if remaining_lines:
+            # Reconstruct text from remaining lines, preserving blank lines as paragraph breaks
+            remaining_text = "\n".join(remaining_lines)
+            paragraphs = _split_text_to_paragraphs(remaining_text, max_chars=1200)
+
+            for para in paragraphs:
+                para = para.strip()
+                if len(para) < 20:
+                    continue
+
+                is_heading, heading_level = _looks_like_heading(para)
+                block_type = "heading" if is_heading else "paragraph"
+
+                section_path = None
+                if block_type == "heading" and heading_level is not None:
+                    section_path = _section_path_push(section_stack, para, heading_level)
+                elif section_stack:
+                    section_path = " > ".join(section_stack)
+
+                blocks.append(
+                    {
+                        "type": block_type,
+                        "text": para,
+                        "page": page_idx + 1,
+                        "heading_level": heading_level,
+                        "section_path": section_path,
+                        "parser_source": "pypdfium2_fasttext",
+                        "bbox": (0.0, 0.0, round(page_width, 1), round(page_height, 1)),
+                    }
+                )
 
     logger.info(
         "[PdfParser][pypdfium2_fasttext] extracted %d blocks from %s",
@@ -284,123 +371,146 @@ def _parse_with_pypdfium2_fasttext(path: Path, config: PdfParserConfig) -> list[
 # ---------------------------------------------------------------------------
 
 
+def _parse_pdfplumber_page(
+    page_idx: int,
+    page,
+    config: PdfParserConfig,
+) -> list[dict[str, Any]]:
+    """Process a single pdfplumber page, returning its blocks."""
+    blocks: list[dict[str, Any]] = []
+    page_height = page.height
+    section_stack: list[str] = []
+
+    if getattr(config, "extract_tables", False):
+        try:
+            tables = page.extract_tables()
+        except Exception:
+            tables = []
+
+        for table_rows in tables or []:
+            if not table_rows:
+                continue
+            table_lines: list[str] = []
+            for row in table_rows:
+                if not row:
+                    continue
+                cells = [str(c).strip() if c is not None else "" for c in row]
+                table_lines.append(" | ".join(cells))
+            if table_lines:
+                blocks.append(
+                    {
+                        "type": "table",
+                        "text": "\n".join(table_lines),
+                        "page": page_idx + 1,
+                        "section_path": None,
+                        "parser_source": "pdfplumber",
+                        "bbox": None,
+                    }
+                )
+
+    try:
+        words = page.extract_words()
+    except Exception:
+        return blocks
+
+    if not words:
+        return blocks
+
+    lines_by_y: dict[float, list[dict[str, Any]]] = {}
+    for w in words:
+        top = round(w["top"], 1)
+        lines_by_y.setdefault(top, []).append(w)
+
+    for y_pos, line_words in sorted(lines_by_y.items()):
+        line_words.sort(key=lambda w: w["x0"])
+        line_text = " ".join(w["text"] for w in line_words).strip()
+        if not line_text:
+            continue
+
+        btype = "paragraph"
+        heading_level = None
+        section_path = None
+
+        if getattr(config, "remove_header_footer_by_coords", False):
+            dist_from_top = y_pos
+            dist_from_bottom = page_height - y_pos
+            if (
+                dist_from_top < config.header_footer_y_threshold
+                or dist_from_bottom < config.header_footer_y_threshold
+            ):
+                btype = "header" if dist_from_top < config.header_footer_y_threshold else "footer"
+
+        if btype == "paragraph":
+            is_heading, heading_level = _looks_like_heading(line_text)
+            if is_heading:
+                btype = "heading"
+                heading_level = heading_level or 3
+                section_path = _section_path_push(section_stack, line_text, heading_level)
+            elif section_stack:
+                section_path = " > ".join(section_stack)
+
+        x0 = min(w["x0"] for w in line_words)
+        x1 = max(w["x1"] for w in line_words)
+        y1 = max(w["bottom"] for w in line_words)
+        bbox = (round(x0, 1), round(y_pos, 1), round(x1, 1), round(y1, 1))
+
+        blocks.append(
+            {
+                "type": btype,
+                "text": line_text,
+                "page": page_idx + 1,
+                "heading_level": heading_level,
+                "section_path": section_path,
+                "parser_source": "pdfplumber",
+                "bbox": bbox,
+            }
+        )
+
+    return blocks
+
+
 def _parse_with_pdfplumber(path: Path, config: PdfParserConfig) -> list[dict[str, Any]]:
     """
-    Slower but more detailed fallback parser.
+    Slow but more detailed fallback parser.
+    The entire pdfplumber session is protected by a global lock because its C
+    extension is not thread-safe — concurrent calls (even on different files)
+    cause segfaults and heap corruption.
     """
     import pdfplumber
 
     logger.info("[PdfParser] trying parser=pdfplumber for %s", path)
 
-    blocks: list[dict[str, Any]] = []
-    section_stack: list[str] = []
+    with _pdfplumber_lock:
+        with pdfplumber.open(str(path)) as pdf:
+            page_count = len(pdf.pages)
+            logger.info("[PdfParser][pdfplumber] opened %s with %d pages", path, page_count)
 
-    with pdfplumber.open(str(path)) as pdf:
-        logger.info("[PdfParser][pdfplumber] opened %s with %d pages", path, len(pdf.pages))
+            workers = 1  # Within-page parallelism is GIL-bound and offers no speedup
+            # Pre-allocate results list to preserve page order
+            results: list[list[dict[str, Any]]] = [[] for _ in range(page_count)]
 
-        for page_idx, page in enumerate(pdf.pages, start=1):
-            page_height = page.height
+            def process_page(args: tuple[int, Any]) -> None:
+                i, page = args
+                results[i] = _parse_pdfplumber_page(i, page, config)
 
-            # Optional tables
-            if getattr(config, "extract_tables", False):
-                try:
-                    tables = page.extract_tables()
-                except Exception as e:
-                    logger.warning(
-                        "[PdfParser][pdfplumber] table extraction failed on page=%d file=%s: %s",
-                        page_idx,
-                        path,
-                        e,
-                    )
-                    tables = []
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(process_page, (i, page)): i
+                    for i, page in enumerate(pdf.pages)
+                }
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.warning("[PdfParser][pdfplumber] page error: %s", e)
 
-                for table_rows in tables or []:
-                    if not table_rows:
-                        continue
-                    table_lines: list[str] = []
-                    for row in table_rows:
-                        if not row:
-                            continue
-                        cells = [str(c).strip() if c is not None else "" for c in row]
-                        table_lines.append(" | ".join(cells))
-                    if table_lines:
-                        blocks.append(
-                            {
-                                "type": "table",
-                                "text": "\n".join(table_lines),
-                                "page": page_idx,
-                                "section_path": None,
-                                "parser_source": "pdfplumber",
-                                "bbox": None,
-                            }
-                        )
+        all_blocks: list[dict[str, Any]] = []
+        for page_results in results:
+            all_blocks.extend(page_results)
 
-            try:
-                words = page.extract_words()
-            except Exception as e:
-                logger.warning(
-                    "[PdfParser][pdfplumber] extract_words failed on page=%d file=%s: %s",
-                    page_idx,
-                    path,
-                    e,
-                )
-                continue
-
-            if not words:
-                continue
-
-            lines_by_y: dict[float, list[dict[str, Any]]] = {}
-            for w in words:
-                top = round(w["top"], 1)
-                lines_by_y.setdefault(top, []).append(w)
-
-            for y_pos, line_words in sorted(lines_by_y.items()):
-                line_words.sort(key=lambda w: w["x0"])
-                line_text = " ".join(w["text"] for w in line_words).strip()
-                if not line_text:
-                    continue
-
-                btype = "paragraph"
-                heading_level = None
-                section_path = None
-
-                if getattr(config, "remove_header_footer_by_coords", False):
-                    dist_from_top = y_pos
-                    dist_from_bottom = page_height - y_pos
-                    if (
-                        dist_from_top < config.header_footer_y_threshold
-                        or dist_from_bottom < config.header_footer_y_threshold
-                    ):
-                        btype = "header" if dist_from_top < config.header_footer_y_threshold else "footer"
-
-                if btype == "paragraph":
-                    is_heading, heading_level = _looks_like_heading(line_text)
-                    if is_heading:
-                        btype = "heading"
-                        heading_level = heading_level or 3
-                        section_path = _section_path_push(section_stack, line_text, heading_level)
-                    elif section_stack:
-                        section_path = " > ".join(section_stack)
-
-                x0 = min(w["x0"] for w in line_words)
-                x1 = max(w["x1"] for w in line_words)
-                y1 = max(w["bottom"] for w in line_words)
-                bbox = (round(x0, 1), round(y_pos, 1), round(x1, 1), round(y1, 1))
-
-                blocks.append(
-                    {
-                        "type": btype,
-                        "text": line_text,
-                        "page": page_idx,
-                        "heading_level": heading_level,
-                        "section_path": section_path,
-                        "parser_source": "pdfplumber",
-                        "bbox": bbox,
-                    }
-                )
-
-    logger.info("[PdfParser][pdfplumber] extracted %d blocks from %s", len(blocks), path)
-    return blocks
+        logger.info("[PdfParser][pdfplumber] extracted %d blocks from %s", len(all_blocks), path)
+        return all_blocks
+    return all_blocks
 
 
 # ---------------------------------------------------------------------------
@@ -560,35 +670,46 @@ class PdfParser(BaseParser):
         candidates: dict[str, Any] = {}
         all_errors: list[str] = []
 
-        # Fast path first
-        fast_result = _run_pdf_candidate(
-            "pypdfium2_fasttext",
-            _parse_with_pypdfium2_fasttext,
-            path,
-            self._cfg,
-        )
-        if fast_result:
-            candidates["pypdfium2_fasttext"] = fast_result
-            if fast_result.get("errors"):
-                all_errors.extend(fast_result["errors"])
-
-            if fast_result.get("blocks") and fast_result["quality_score"] >= self._cfg.min_quality_score:
-                logger.info(
-                    "[PdfParser] early return with parser=pypdfium2_fasttext for %s score=%.4f",
-                    path,
-                    fast_result["quality_score"],
-                )
-                return self._build_parsed_document(
-                    path=path,
-                    blocks=fast_result["blocks"],
-                    parser_used="pypdfium2_fasttext",
-                    score_details=fast_result["score_details"],
-                    candidate_scores={k: v["quality_score"] for k, v in candidates.items()},
-                    file_size=file_size,
-                    likely_scanned=likely_scanned,
-                    page_count_fallback=analyzed_page_count,
-                    errors=all_errors,
-                )
+        # Fast path disabled: pypafium2's C extension is not thread-safe and
+        # crashes under concurrent access from multiple workers, even when
+        # individual pypafium2 calls are to different files. Since the user
+        # accepted pdfplumber's slowness, we go directly to the reliable path.
+        #
+        # fast_result = _run_pdf_candidate(
+        #     "pypafium2_fasttext",
+        #     _parse_with_pypafium2_fasttext,
+        #     path,
+        #     self._cfg,
+        # )
+        # if fast_result:
+        #     candidates["pypafium2_fasttext"] = fast_result
+        #     if fast_result.get("errors"):
+        #         all_errors.extend(fast_result["errors"])
+        #
+        #     if fast_result.get("blocks") and fast_result["quality_score"] >= self._cfg.min_quality_score:
+        #         fast_table_count = fast_result["score_details"].get("table_count", 0)
+        #         if fast_table_count > 0:
+        #             logger.info(
+        #                 "[PdfParser] early return with parser=pypafium2_fasttext for %s score=%.4f tables=%d",
+        #                 path,
+        #                 fast_result["quality_score"],
+        #                 fast_table_count,
+        #             )
+        #             return self._build_parsed_document(
+        #                 path=path,
+        #                 blocks=fast_result["blocks"],
+        #                 parser_used="pypafium2_fasttext",
+        #                 score_details=fast_result["score_details"],
+        #                 candidate_scores={k: v["quality_score"] for k, v in candidates.items()},
+        #                 file_size=file_size,
+        #                 likely_scanned=likely_scanned,
+        #                 page_count_fallback=analyzed_page_count,
+        #                 errors=all_errors,
+        #             )
+        #         logger.info(
+        #             "[PdfParser] fast path quality=%.4f but no tables — running pdfplumber to check for tables",
+        #             fast_result["quality_score"],
+        #         )
 
         # Slow fallback
         plumber_result = _run_pdf_candidate(
@@ -605,8 +726,24 @@ class PdfParser(BaseParser):
         valid_candidates = {k: v for k, v in candidates.items() if v.get("blocks")}
 
         if valid_candidates:
-            best_name = max(valid_candidates, key=lambda k: valid_candidates[k]["quality_score"])
-            best = valid_candidates[best_name]
+            # Prefer pdfplumber if it found tables (even if quality score is slightly lower)
+            plumber = valid_candidates.get("pdfplumber")
+            fast = valid_candidates.get("pypdfium2_fasttext")
+
+            if plumber and plumber["score_details"].get("table_count", 0) > 0:
+                # pdfplumber found tables — use it even if quality is lower
+                best = plumber
+                best_name = "pdfplumber"
+                logger.info(
+                    "[PdfParser] selected pdfplumber (tables=%d) over fast path (tables=%d, score=%.4f)",
+                    plumber["score_details"].get("table_count", 0),
+                    fast["score_details"].get("table_count", 0) if fast else 0,
+                    fast["quality_score"] if fast else 0,
+                )
+            else:
+                best_name = max(valid_candidates, key=lambda k: valid_candidates[k]["quality_score"])
+                best = valid_candidates[best_name]
+
             logger.info(
                 "[PdfParser] selected parser=%s for %s with score=%.4f",
                 best_name,

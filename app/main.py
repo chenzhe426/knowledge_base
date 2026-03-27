@@ -5,14 +5,13 @@ from typing import Any
 
 from app.db import get_all_documents, init_db, reset_database
 from app.services import (
-    answer_question,
-    get_chat_history,
     get_document_chunks,
     import_documents,
     import_single_document,
     index_document,
-    summarize_document,
 )
+from app.qa.pipeline import answer_question
+from app.qa.session import get_chat_history, summarize_document
 
 
 def print_json(data: Any):

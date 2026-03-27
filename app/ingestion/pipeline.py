@@ -12,6 +12,7 @@ parse_documents_from_folder(folder_path, config=None)
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from app.ingestion.config import ParsingConfig
@@ -32,6 +33,22 @@ _PARSER_MAP = {
     "docx": DocxParser,
     "text": TextParser,
 }
+
+
+def _worker_parse_one(path_str: str) -> ParsedDocument | None:
+    """
+    Top-level worker function for ProcessPoolExecutor.
+    Must be at module level to be picklable with 'spawn' context.
+    Each subprocess re-imports this module, so imports are local.
+    """
+    import logging
+    from pathlib import Path
+
+    try:
+        return parse_document(Path(path_str), config=None)
+    except Exception as e:
+        logging.getLogger(__name__).warning("[pipeline] parse failed: %s | %s", path_str, e)
+        return None
 
 
 def parse_document(
@@ -100,14 +117,25 @@ def parse_documents_from_folder(
 
     results: list[ParsedDocument] = []
     pattern = "**/*" if recursive else "*"
+    file_paths = [p for p in sorted(folder.glob(pattern)) if p.is_file()]
 
-    for path in sorted(folder.glob(pattern)):
-        if not path.is_file():
-            continue
-        try:
-            doc = parse_document(path, config=config)
-            results.append(doc)
-        except Exception as e:
-            logger.warning("[pipeline] parse failed: %s | %s", path, e)
+    if not file_paths:
+        return results
 
+    workers = min(2, len(file_paths))  # Use multiprocessing (not threading) for true parallelism
+
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_worker_parse_one, str(p)): p for p in file_paths
+        }
+        for future in as_completed(futures):
+            try:
+                doc = future.result()
+                if doc is not None:
+                    results.append(doc)
+            except Exception as e:
+                pass
+
+    # Restore original sorted order for deterministic output
+    results.sort(key=lambda d: file_paths.index(Path(d.source_path)) if d.source_path else 0)
     return results

@@ -18,6 +18,7 @@ from app.db.repositories.chunk_repository import (
     get_chunks_by_ids,
     get_neighbor_chunks,
     insert_chunk,
+    insert_chunks_batch,
     search_chunks_boolean,
     search_chunks_fulltext,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "update_document",
     "delete_document",
     "insert_chunk",
+    "insert_chunks_batch",
     "get_chunk_by_id",
     "get_chunks_by_document_id",
     "get_chunks_by_ids",

@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -78,9 +79,10 @@ def run_one_sample(
 ) -> dict:
     """
     Run retrieval + answer for one sample and return a unified result dict.
-
-    Retrieval scoring is skipped when label_status is 'unlabeled' or 'unanswerable'.
+    Times each phase: retrieval_answer, retrieval_score, answer_score.
     """
+    import time
+
     query = sample.question.user_query
     history = sample.question.conversation_history
     label_status = sample.retrieval.label_status
@@ -95,6 +97,7 @@ def run_one_sample(
         "retrieved_chunks": [],
         "final_answer": "",
         "latency_ms": 0.0,
+        "timing_ms": {},
         "error": "",
         # Retrieval metrics
         "retrieval_hit_at_1": None,
@@ -111,28 +114,38 @@ def run_one_sample(
 
     try:
         # Run full RAG pipeline (retrieve + answer)
+        t0 = time.perf_counter()
         answer_result = adapter.answer(query, conversation_history=history if history else None)
+        t1 = time.perf_counter()
+        timing_ms = result["timing_ms"]
 
         result["retrieved_chunks"] = answer_result.get("retrieved_chunks", [])
         result["final_answer"] = answer_result.get("final_answer", "")
         result["latency_ms"] = answer_result.get("latency_ms", 0.0)
+        timing_ms["rag_total"] = round((t1 - t0) * 1000, 1)
 
         # Score retrieval only when gold labels exist
         if do_retrieval_scoring:
+            t2 = time.perf_counter()
             retr_scores = retrieval_scorer.score(sample, result["retrieved_chunks"])
+            t3 = time.perf_counter()
             result["retrieval_hit_at_1"] = retr_scores.get("hit_at_1", False)
             result["retrieval_hit_at_3"] = retr_scores.get("hit_at_3", False)
             result["retrieval_hit_at_5"] = retr_scores.get("hit_at_5", False)
             result["retrieval_recall_at_5"] = retr_scores.get("recall_at_5", 0.0)
             result["retrieval_mrr"] = retr_scores.get("mrr", 0.0)
+            timing_ms["retrieval_score"] = round((t3 - t2) * 1000, 1)
 
         # Score answer
+        t4 = time.perf_counter()
         answer_scores = answer_scorer.score(sample, answer_result)
+        t5 = time.perf_counter()
         result["answer_label"] = answer_scores.get("answer_label", "wrong")
         result["must_include_hit_ratio"] = answer_scores.get("must_include_hit_ratio", 0.0)
         result["must_not_include_violations"] = answer_scores.get(
             "must_not_include_violations", []
         )
+        timing_ms["answer_score"] = round((t5 - t4) * 1000, 1)
 
     except Exception as e:
         result["error"] = str(e)
@@ -178,6 +191,13 @@ def main() -> None:
         "--multistage",
         action="store_true",
         help="Enable V3 multi-stage retrieval (doc → section → chunk).",
+    )
+    parser.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help="Number of parallel workers for sample evaluation (default: 1, sequential). "
+             "Use 4-8 for CPU-bound workflows, or 8-16 for I/O-bound (LLM calls).",
     )
     args = parser.parse_args()
 
@@ -229,17 +249,56 @@ def main() -> None:
     # Run evaluation
     run_id = args.run_id or f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     case_results: list[dict] = []
+    n_workers = max(1, args.parallel)
+    print(f"[run_eval] Running {len(samples)} samples with {n_workers} worker(s)")
 
-    for i, sample in enumerate(samples):
-        result = run_one_sample(sample, adapter, retrieval_scorer, answer_scorer)
-        case_results.append(result)
-        status = "✓" if not result.get("error") else "✗"
-        retr_str = "skipped" if result.get("retrieval_skipped") else f"hit={result['retrieval_hit_at_5']}"
-        print(
-            f"  [{i+1}/{len(samples)}] {status} [{sample.id}] "
-            f"label_status={result['label_status']} retrieval={retr_str} "
-            f"answer={result['answer_label']}"
-        )
+    if n_workers == 1:
+        for i, sample in enumerate(samples):
+            result = run_one_sample(sample, adapter, retrieval_scorer, answer_scorer)
+            case_results.append(result)
+            status = "✓" if not result.get("error") else "✗"
+            tm = result.get("timing_ms", {})
+            rag_ms = tm.get("rag_total", 0)
+            retr_score_ms = tm.get("retrieval_score", 0)
+            ans_score_ms = tm.get("answer_score", 0)
+            total_ms = rag_ms + retr_score_ms + ans_score_ms
+            retr_str = "skipped" if result.get("retrieval_skipped") else f"hit={result['retrieval_hit_at_5']}"
+            print(
+                f"  [{i+1}/{len(samples)}] {status} [{sample.id}] "
+                f"total={total_ms:.0f}ms "
+                f"(rag={rag_ms:.0f}ms | retr_score={retr_score_ms:.0f}ms | ans_score={ans_score_ms:.0f}ms) "
+                f"answer={result['answer_label']}"
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            future_to_sample: dict = {
+                executor.submit(run_one_sample, sample, adapter, retrieval_scorer, answer_scorer): (i, sample)
+                for i, sample in enumerate(samples)
+            }
+            results_in_order: list[tuple[int, dict]] = []
+            for future in as_completed(future_to_sample):
+                i, sample = future_to_sample[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    result = {"id": sample.id, "error": str(e)}
+                status = "✓" if not result.get("error") else "✗"
+                tm = result.get("timing_ms", {})
+                rag_ms = tm.get("rag_total", 0)
+                retr_score_ms = tm.get("retrieval_score", 0)
+                ans_score_ms = tm.get("answer_score", 0)
+                total_ms = rag_ms + retr_score_ms + ans_score_ms
+                retr_str = "skipped" if result.get("retrieval_skipped") else f"hit={result['retrieval_hit_at_5']}"
+                print(
+                    f"  [{i+1}/{len(samples)}] {status} [{sample.id}] "
+                    f"total={total_ms:.0f}ms "
+                    f"(rag={rag_ms:.0f}ms | retr_score={retr_score_ms:.0f}ms | ans_score={ans_score_ms:.0f}ms) "
+                    f"answer={result['answer_label']}"
+                )
+                results_in_order.append((i, result))
+        # Restore original order
+        results_in_order.sort(key=lambda x: x[0])
+        case_results = [r for _, r in results_in_order]
 
     # Build report
     json_report = build_json_report(
@@ -282,6 +341,21 @@ def main() -> None:
     print(f"  Answer     – exact: {labels.get('exact', 0)}  "
           f"partial: {labels.get('partial', 0)}  "
           f"wrong: {labels.get('wrong', 0)}")
+
+    # Timing summary
+    all_timing = [r.get("timing_ms", {}) for r in case_results]
+    rag_times = [t.get("rag_total", 0) for t in all_timing if t]
+    retr_score_times = [t.get("retrieval_score", 0) for t in all_timing if t]
+    ans_score_times = [t.get("answer_score", 0) for t in all_timing if t]
+    n = len(case_results)
+    print("\n=== Timing (ms per sample, mean) ===")
+    if rag_times:
+        print(f"  RAG (retrieve+answer):  avg={sum(rag_times)/n:.0f}  min={min(rag_times):.0f}  max={max(rag_times):.0f}")
+    if retr_score_times:
+        print(f"  Retrieval scoring:      avg={sum(retr_score_times)/n:.0f}  min={min(retr_score_times):.0f}  max={max(retr_score_times):.0f}")
+    if ans_score_times:
+        print(f"  Answer scoring:          avg={sum(ans_score_times)/n:.0f}  min={min(ans_score_times):.0f}  max={max(ans_score_times):.0f}")
+
     print(f"\n  Reports: {output_path}  {md_path}")
 
 

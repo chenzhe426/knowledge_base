@@ -58,15 +58,21 @@ def retrieve_chunks(
 
     candidate_top_k = max(top_k, 20)
 
-    lexical_hits = _lexical_recall_from_db(
-        query_info=query_info,
-        top_k=max(candidate_top_k, HYBRID_HYDRATE_TOP_K),
-    )
-
-    vector_hits = _vector_recall_from_qdrant(
-        query_info=query_info,
-        top_k=max(candidate_top_k, HYBRID_VECTOR_TOP_K),
-    )
+    # Parallelize lexical and vector recall (both I/O bound)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        lexical_future = pool.submit(
+            _lexical_recall_from_db,
+            query_info,
+            max(candidate_top_k, HYBRID_HYDRATE_TOP_K),
+        )
+        vector_future = pool.submit(
+            _vector_recall_from_qdrant,
+            query_info,
+            max(candidate_top_k, HYBRID_VECTOR_TOP_K),
+        )
+        lexical_hits = lexical_future.result()
+        vector_hits = vector_future.result()
 
     if not lexical_hits and not vector_hits:
         return []

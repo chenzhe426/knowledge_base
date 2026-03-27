@@ -237,6 +237,131 @@ def insert_chunk(
         return int(cursor.lastrowid)
 
 
+def insert_chunks_batch(
+    document_id: int,
+    chunks: list[dict[str, Any]],
+) -> list[int]:
+    """
+    批量插入 chunks，MySQL 单次 INSERT + 单次 SELECT 取 ID + 一次 commit。
+    返回插入后的 chunk_id 列表，顺序与输入顺序一致。
+    仅支持 document_id + chunk_index 唯一约束的情况（index_document 场景）。
+    """
+    if not chunks:
+        return []
+
+    embedding_model = getattr(config, "OLLAMA_EMBED_MODEL", None)
+
+    with get_cursor(commit=True) as (_, cursor):
+        text_column = _chunk_text_column(cursor)
+
+        # ---------------------------------------------------------------
+        # 从第一条数据确定列结构（假设所有 chunk 结构一致）
+        # ---------------------------------------------------------------
+        first = chunks[0]
+        columns: list[str] = ["document_id", text_column]
+        json_fields: set[str] = {"embedding", "section_path", "metadata_json"}
+
+        def add_col(name: str, value: Any, json_dump: bool = False) -> None:
+            if _column_exists(cursor, "document_chunks", name):
+                columns.append(name)
+                if name in json_fields:
+                    json_cols.add(name)
+                if name == "metadata_json":
+                    json_cols.add("metadata_json")
+
+        json_cols: set[str] = set()
+        add_col("embedding", first.get("embedding"), json_dump=True)
+        add_col("chunk_index", first.get("chunk_index"))
+        add_col("section_path", first.get("section_path"), json_dump=True)
+        add_col("page_start", first.get("page_start"))
+        add_col("page_end", first.get("page_end"))
+        add_col("block_start_index", first.get("block_start_index"))
+        add_col("block_end_index", first.get("block_end_index"))
+        add_col("chunk_type", first.get("chunk_type"))
+        add_col("metadata_json", first.get("metadata_json"), json_dump=True)
+        add_col("search_text", first.get("search_text"))
+        add_col("lexical_text", first.get("lexical_text"))
+        add_col("title", first.get("title"))
+        add_col("section_title", first.get("section_title"))
+        add_col("token_count", first.get("token_count"))
+        add_col("chunk_hash", first.get("chunk_hash"))
+        add_col("embedding_model", embedding_model)
+
+        placeholders = ", ".join(["%s"] * len(columns))
+        column_sql = ", ".join(columns)
+
+        # ---------------------------------------------------------------
+        # 构建批量 values
+        # ---------------------------------------------------------------
+        rows_values: list[list[Any]] = []
+        chunk_indices: list[tuple[int, int | None]] = []  # (document_id, chunk_index)
+
+        for chunk in chunks:
+            values: list[Any] = [document_id, chunk.get("chunk_text") or ""]
+            for col in columns[2:]:  # skip document_id and text column
+                val = chunk.get(col)
+                if col in json_cols:
+                    val = safe_json_dumps(val) if val is not None else None
+                values.append(val)
+            rows_values.append(values)
+            chunk_indices.append((document_id, chunk.get("chunk_index")))
+
+        # ---------------------------------------------------------------
+        # INSERT（带 ON DUPLICATE KEY UPDATE 以支持重建）
+        # ---------------------------------------------------------------
+        update_columns = [c for c in columns if c not in {"document_id", "chunk_index"}]
+        update_sql = ", ".join(f"{c} = VALUES({c})" for c in update_columns)
+        if _column_exists(cursor, "document_chunks", "updated_at"):
+            update_sql += ", updated_at = CURRENT_TIMESTAMP"
+
+        cursor.execute(
+            f"""
+            INSERT INTO document_chunks ({column_sql})
+            VALUES {", ".join(f"({placeholders})" for _ in rows_values)}
+            ON DUPLICATE KEY UPDATE {update_sql}
+            """,
+            [v for row in rows_values for v in row],
+        )
+
+        # ---------------------------------------------------------------
+        # 批量取回 inserted / updated ID
+        # ---------------------------------------------------------------
+        if not chunk_indices:
+            return []
+
+        non_null = [(did, ci) for did, ci in chunk_indices if ci is not None]
+        null_pairs = [(did,) for did, ci in chunk_indices if ci is None]
+
+        # MySQL 支持 (a, b) IN ((1, 2), (3, 4)) 语法
+        conditions: list[str] = []
+        values: list[Any] = []
+
+        if non_null:
+            in_clause = ", ".join("(%s, %s)" for _ in non_null)
+            conditions.append(f"(document_id, chunk_index) IN ({in_clause})")
+            values.extend(v for pair in non_null for v in pair)
+
+        if null_pairs:
+            in_clause = ", ".join("(%s)" for _ in null_pairs)
+            conditions.append(f"(document_id, chunk_index) IN ({in_clause}) AND chunk_index IS NULL")
+            values.extend(v for pair in null_pairs for v in pair)
+
+        cursor.execute(
+            f"""
+            SELECT id, document_id, chunk_index
+            FROM document_chunks
+            WHERE {' OR '.join(conditions)}
+            """,
+            values,
+        )
+
+        id_map: dict[tuple[int, int | None], int] = {}
+        for row in cursor.fetchall():
+            id_map[(int(row["document_id"]), row["chunk_index"])] = int(row["id"])
+
+        return [id_map.get(pair, 0) for pair in chunk_indices]
+
+
 def _select_chunk_columns_sql(cursor) -> str:
     text_column = _chunk_text_column(cursor)
 

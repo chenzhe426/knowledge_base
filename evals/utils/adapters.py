@@ -148,11 +148,11 @@ class EvalAdapter:
 
     def _retrieve_internal(self, query: str, top_k: int) -> list[dict[str, Any]]:
         # Import here to avoid circular imports and to lazy-load
-        from app.services.retrieval_service import retrieve_chunks
+        from app.retrieval.service import retrieve_chunks
         return retrieve_chunks(query, top_k=top_k)
 
     def _answer_internal(self, query: str, history: Optional[list[dict]]) -> dict[str, Any]:
-        from app.services.qa_service import answer_question
+        from app.qa.pipeline import answer_question
         return answer_question(
             question=query,
             top_k=self.top_k,
