@@ -4,7 +4,7 @@ import uuid
 from typing import Any, Dict, List
 
 from app.db import create_chat_session, get_chat_session
-from app.services import get_chat_history
+from app.qa.session import get_chat_history
 from app.tools.base import ToolExecutionError, require_field, run_tool
 from app.tools.schemas import (
     ChatMessage,

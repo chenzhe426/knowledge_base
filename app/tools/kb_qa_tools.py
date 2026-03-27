@@ -19,11 +19,9 @@ from langchain.tools import tool
 from app.db import get_chat_messages
 from app.services.common import normalize_whitespace, safe_get, to_float
 from app.services.llm_service import chat_completion
-from app.services.qa_service import (
-    assemble_context as _assemble_context,
-    rewrite_query_with_history as _rewrite_query_with_history,
-)
-from app.services.retrieval_service import retrieve_chunks
+from app.qa.context import assemble_context as _assemble_context
+from app.qa.pipeline import rewrite_query_with_history as _rewrite_query_with_history
+from app.retrieval.service import retrieve_chunks
 from app.tools.base import ToolExecutionError, make_error, make_ok, require_field
 from app.tools.schemas import (
     AnswerSource,

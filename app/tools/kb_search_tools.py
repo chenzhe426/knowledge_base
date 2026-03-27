@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from app.services import retrieve_chunks
+from app.retrieval.service import retrieve_chunks
 from app.tools.base import run_tool
 from app.tools.schemas import (
     KBSearchKnowledgeBaseInput,

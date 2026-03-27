@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from app.services import summarize_document
+from app.qa.session import summarize_document
 from app.tools.base import run_tool
 from app.tools.schemas import KBSummarizeDocumentInput, KBSummarizeDocumentOutput
 
