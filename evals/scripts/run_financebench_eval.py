@@ -66,7 +66,7 @@ def doc_name_to_id(title: str) -> int | None:
 
 def run_one_sample(sample: dict, adapter: EvalAdapter) -> dict:
     """Run RAG pipeline for one FinanceBench sample and merge gold info."""
-    eval_id = sample.get("eval_id", "")
+    eval_id = sample.get("id", "") or sample.get("eval_id", "")
     question = sample.get("question", "")
 
     result = {

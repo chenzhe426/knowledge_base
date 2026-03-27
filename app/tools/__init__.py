@@ -9,7 +9,6 @@ from app.tools.kb_qa_tools import (
 )
 from app.tools.kb_search_tools import kb_search_knowledge_base
 from app.tools.kb_summary_tools import kb_summarize_document
-from app.tools.registry import TOOL_REGISTRY, get_tool, list_tools
 
 __all__ = [
     "kb_import_file",
@@ -23,7 +22,4 @@ __all__ = [
     "kb_assemble_context",
     "kb_generate_answer",
     "kb_answer_question",
-    "TOOL_REGISTRY",
-    "get_tool",
-    "list_tools",
 ]

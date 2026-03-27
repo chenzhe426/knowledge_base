@@ -276,10 +276,12 @@ def main() -> None:
     print("\n=== Summary ===")
     print(f"  Retrieval  – Hit@1: {summary['retrieval']['hit_at_1']}  "
           f"Hit@3: {summary['retrieval']['hit_at_3']}  "
-          f"MRR: {summary['retrieval']['mrr']}")
-    print(f"  Answer     – exact: {summary['answer']['exact']}  "
-          f"partial: {summary['answer']['partial']}  "
-          f"wrong: {summary['answer']['wrong']}")
+          f"MRR: {summary['retrieval']['mrr']}  "
+          f"(labeled={summary['retrieval_labeled_cases']}, skipped={summary['retrieval_skipped_cases']})")
+    labels = summary["answer"].get("label_counts", {})
+    print(f"  Answer     – exact: {labels.get('exact', 0)}  "
+          f"partial: {labels.get('partial', 0)}  "
+          f"wrong: {labels.get('wrong', 0)}")
     print(f"\n  Reports: {output_path}  {md_path}")
 
 

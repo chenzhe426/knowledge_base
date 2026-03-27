@@ -1,18 +1,30 @@
+"""
+KB QA tools: agent-facing tool functions with Chinese prompts.
+All tools use LangChain's @tool decorator directly here.
+
+Triple-layer cleanup (Phase 4):
+  - @tool applied HERE, not re-applied in agent.py
+  - Helpers deduplicated: imports from app/qa/config.py where not Chinese-specific
+  - Tool functions re-use app/qa/ for retrieval/context/qa pipeline where applicable
+"""
 from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Dict, List, Optional
 
-from app.db import get_chat_messages, get_chat_session
+from langchain.tools import tool
+
+from app.db import get_chat_messages
 from app.services.common import normalize_whitespace, safe_get, to_float
-from app.services.llm_service import chat_completion, summarize_text
+from app.services.llm_service import chat_completion
 from app.services.qa_service import (
     assemble_context as _assemble_context,
     rewrite_query_with_history as _rewrite_query_with_history,
 )
 from app.services.retrieval_service import retrieve_chunks
-from app.tools.base import ToolExecutionError, require_field, run_tool
+from app.tools.base import ToolExecutionError, make_error, make_ok, require_field
 from app.tools.schemas import (
     AnswerSource,
     KBAnswerQuestionInput,
@@ -24,6 +36,7 @@ from app.tools.schemas import (
     KBGenerateAnswerInput,
     KBGenerateAnswerOutput,
     SourceHighlightSpan,
+    ToolResult,
 )
 
 
@@ -38,24 +51,18 @@ QA_STRUCTURED_ENABLE = True
 QA_HIGHLIGHT_ENABLE = True
 
 
-def _page_label(page_start: Any, page_end: Any) -> str:
-    if page_start is None and page_end is None:
-        return "-"
-    if page_start is not None and page_end is not None:
-        if page_start == page_end:
-            return str(page_start)
-        return f"{page_start}-{page_end}"
-    return str(page_start if page_start is not None else page_end)
-
-
-def _truncate_text(text: str, max_len: int = 220) -> str:
-    text = normalize_whitespace(text or "")
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 3] + "..."
+# Import shared helpers from app/qa (non Chinese-specific)
+from app.qa.config import (
+    _page_label,
+    _truncate_text,
+    _normalize_chunk_source as _qa_normalize_chunk_source,
+    _build_highlight_spans as _qa_build_highlight_spans,
+    _extract_query_terms as _qa_extract_query_terms,
+)
 
 
 def _normalize_chunk_source(chunk: Dict[str, Any]) -> AnswerSource:
+    """Build an AnswerSource pydantic model from a chunk dict."""
     return AnswerSource(
         chunk_id=chunk.get("chunk_id"),
         document_id=chunk.get("document_id"),
@@ -71,43 +78,12 @@ def _normalize_chunk_source(chunk: Dict[str, Any]) -> AnswerSource:
 
 
 def _build_highlight_spans(text: str, terms: List[str]) -> List[Dict[str, Any]]:
-    text = text or ""
-    if not text or not terms:
-        return []
-
-    spans: List[tuple[int, int]] = []
-    for term in terms:
-        term = normalize_whitespace(term)
-        if not term:
-            continue
-        try:
-            pattern = re.compile(re.escape(term), re.IGNORECASE)
-        except Exception:
-            continue
-        for match in pattern.finditer(text):
-            start, end = match.span()
-            if start == end:
-                continue
-            spans.append((start, end))
-
-    if not spans:
-        return []
-
-    spans.sort(key=lambda x: (x[0], x[1]))
-    merged: List[List[int]] = []
-    for start, end in spans:
-        if not merged or start > merged[-1][1]:
-            merged.append([start, end])
-        else:
-            merged[-1][1] = max(merged[-1][1], end)
-
-    return [
-        {"start": start, "end": end, "text": text[start:end]}
-        for start, end in merged
-    ]
+    """Build highlight spans. Implementation shared with app/qa/config."""
+    return _qa_build_highlight_spans(text, terms)
 
 
 def _format_history_for_prompt(history: List[Dict[str, Any]], limit: int = CHAT_HISTORY_LIMIT) -> str:
+    """Format chat history with Chinese labels (agent-facing)."""
     if not history:
         return ""
     selected = history[-limit:]
@@ -123,11 +99,12 @@ def _format_history_for_prompt(history: List[Dict[str, Any]], limit: int = CHAT_
 
 
 def _build_answer_prompt(question: str, context: str, history_text: str = "") -> tuple[str, str]:
+    """Chinese prompt for free-text answer generation (agent-facing)."""
     system_prompt = (
-        "你是一个基于知识库回答问题的助手。"
-        "你必须优先依据提供的上下文回答。"
-        "如果上下文不足以支持结论，要明确说"知识库中没有足够信息支持该结论"。"
-        "不要编造页码、来源或事实。"
+        "你是一个基于知识库回答问题的助手。\n"
+        "你必须优先依据提供的上下文回答。\n"
+        "如果上下文不足以支持结论，要明确说「知识库中没有足够信息支持该结论」。\n"
+        "不要编造页码、来源或事实。\n"
         "回答要准确、简洁、中文输出。"
     )
     user_parts = []
@@ -138,12 +115,13 @@ def _build_answer_prompt(question: str, context: str, history_text: str = "") ->
 
 
 def _build_structured_answer_prompt(question: str, context: str, history_text: str = "") -> tuple[str, str]:
+    """Chinese prompt for structured answer generation (agent-facing)."""
     system_prompt = (
-        "你是一个基于知识库回答问题的助手。"
-        "你必须严格依据上下文作答，不要编造。"
-        "输出必须是合法 JSON，且只输出 JSON，不要有额外解释。"
-        '{"answer":"","summary":"","key_points":[],"confidence":0.0}'
-        "其中 confidence 为 0 到 1 之间的小数。"
+        "你是一个基于知识库回答问题的助手。\n"
+        "你必须严格依据上下文作答，不要编造。\n"
+        "输出必须是合法 JSON，且只输出 JSON，不要有额外解释。\n"
+        '{"answer":"","summary":"","key_points":[],"confidence":0.0}\n'
+        "其中 confidence 为 0 到 1 之间的小数。\n"
         "如果上下文不足，answer 和 summary 中要明确说明信息不足。"
     )
     user_parts = []
@@ -154,6 +132,7 @@ def _build_structured_answer_prompt(question: str, context: str, history_text: s
 
 
 def _safe_parse_structured_answer(raw_text: str) -> Dict[str, Any]:
+    """Parse LLM structured output (agent-facing JSON format)."""
     raw_text = (raw_text or "").strip()
     if not raw_text:
         return {"answer": "", "summary": "", "key_points": [], "confidence": 0.0}
@@ -175,6 +154,7 @@ def _safe_parse_structured_answer(raw_text: str) -> Dict[str, Any]:
 
 
 def _estimate_confidence(retrieved_chunks: List[Dict[str, Any]], answer_text: str) -> float:
+    """Estimate confidence from retrieval scores."""
     if not retrieved_chunks:
         return 0.05
     top_score = max([to_float(c.get("score")) for c in retrieved_chunks] + [0.0])
@@ -185,22 +165,8 @@ def _estimate_confidence(retrieved_chunks: List[Dict[str, Any]], answer_text: st
     return round(max(0.0, min(1.0, confidence)), 4)
 
 
-def _extract_query_terms(question: str, rewritten_query: str | None, retrieved_chunks: List[Dict[str, Any]]) -> List[str]:
-    terms = set()
-    for raw in [question, rewritten_query or ""]:
-        raw = normalize_whitespace(raw)
-        if not raw:
-            continue
-        for token in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9_./:-]{1,}", raw):
-            terms.add(token)
-    for chunk in retrieved_chunks:
-        for term, count in (chunk.get("term_hits") or {}).items():
-            if count:
-                terms.add(term)
-    return sorted(terms, key=lambda x: (-len(x), x))
-
-
 def _build_sources(retrieved_chunks: List[Dict[str, Any]], highlight: bool, highlight_terms: List[str], limit: int = 5) -> List[AnswerSource]:
+    """Build AnswerSource list from retrieved chunks."""
     sources: List[AnswerSource] = []
     for chunk in retrieved_chunks[:limit]:
         source = _normalize_chunk_source(chunk)
@@ -215,14 +181,16 @@ def _build_sources(retrieved_chunks: List[Dict[str, Any]], highlight: bool, high
 
 
 # -------------------------
-# Tool implementations
+# Tool implementations (@tool applied directly here, not in agent.py)
 # -------------------------
 
 
+@tool
 def kb_rewrite_query(input_data: KBAnswerQuestionInput | Dict[str, Any]) -> Dict[str, Any]:
-    payload = input_data if isinstance(input_data, KBRewriteQueryInput) else KBRewriteQueryInput(**input_data)
-
-    def _execute() -> Dict[str, Any]:
+    """Rewrite user question using conversation history (agent tool)."""
+    start = time.perf_counter()
+    try:
+        payload = input_data if isinstance(input_data, KBRewriteQueryInput) else KBRewriteQueryInput(**input_data)
         question = normalize_whitespace(payload.question)
         if not question:
             raise ToolExecutionError("EMPTY_QUESTION", "question cannot be empty")
@@ -237,21 +205,27 @@ def kb_rewrite_query(input_data: KBAnswerQuestionInput | Dict[str, Any]) -> Dict
             ]
 
         rewritten_query = _rewrite_query_with_history(history, question) if history else question
-
-        return KBRewriteQueryOutput(
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_ok(TOOL_REWRITE_QUERY, KBRewriteQueryOutput(
             original_question=question,
             rewritten_query=rewritten_query,
             used_history=payload.use_history and bool(history),
-        ).model_dump()
+        ).model_dump(), duration_ms)
+    except ToolExecutionError as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_error(TOOL_REWRITE_QUERY, e.code, e.message, duration_ms)
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_error(TOOL_REWRITE_QUERY, "INTERNAL_ERROR", str(e), duration_ms)
 
-    return run_tool(TOOL_REWRITE_QUERY, _execute)
 
-
+@tool
 def kb_assemble_context(input_data: KBAssembleContextInput | Dict[str, Any]) -> Dict[str, Any]:
-    payload = input_data if isinstance(input_data, KBAssembleContextInput) else KBAssembleContextInput(**input_data)
+    """Assemble readable context from search hits (agent tool)."""
+    start = time.perf_counter()
+    try:
+        payload = input_data if isinstance(input_data, KBAssembleContextInput) else KBAssembleContextInput(**input_data)
 
-    def _execute() -> Dict[str, Any]:
-        # Convert SearchHit back to raw chunk dict for assemble_context
         raw_chunks: List[Dict[str, Any]] = []
         for hit in payload.hits:
             chunk: Dict[str, Any] = {
@@ -273,19 +247,26 @@ def kb_assemble_context(input_data: KBAssembleContextInput | Dict[str, Any]) -> 
         context = _assemble_context(raw_chunks, max_chunks=payload.max_chunks)
         sources = _build_sources(raw_chunks, highlight=False, highlight_terms=[], limit=payload.max_chunks)
 
-        return KBAssembleContextOutput(
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_ok(TOOL_ASSEMBLE_CONTEXT, KBAssembleContextOutput(
             context=context,
             chunk_count=len(raw_chunks),
             sources=sources,
-        ).model_dump()
+        ).model_dump(), duration_ms)
+    except ToolExecutionError as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_error(TOOL_ASSEMBLE_CONTEXT, e.code, e.message, duration_ms)
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_error(TOOL_ASSEMBLE_CONTEXT, "INTERNAL_ERROR", str(e), duration_ms)
 
-    return run_tool(TOOL_ASSEMBLE_CONTEXT, _execute)
 
-
+@tool
 def kb_generate_answer(input_data: KBGenerateAnswerInput | Dict[str, Any]) -> Dict[str, Any]:
-    payload = input_data if isinstance(input_data, KBGenerateAnswerInput) else KBGenerateAnswerInput(**input_data)
-
-    def _execute() -> Dict[str, Any]:
+    """Generate answer from context (agent tool, Chinese prompts)."""
+    start = time.perf_counter()
+    try:
+        payload = input_data if isinstance(input_data, KBGenerateAnswerInput) else KBGenerateAnswerInput(**input_data)
         question = normalize_whitespace(payload.question)
         if not question:
             raise ToolExecutionError("EMPTY_QUESTION", "question cannot be empty")
@@ -310,26 +291,32 @@ def kb_generate_answer(input_data: KBGenerateAnswerInput | Dict[str, Any]) -> Di
             system_prompt, user_prompt = _build_answer_prompt(question, context, history_text)
             answer_text = normalize_whitespace(chat_completion(system_prompt=system_prompt, user_prompt=user_prompt))
 
-        return KBGenerateAnswerOutput(
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_ok(TOOL_GENERATE_ANSWER, KBGenerateAnswerOutput(
             answer=answer_text,
             confidence=confidence,
             key_points=key_points,
             summary=summary,
             sources=[],
-        ).model_dump()
+        ).model_dump(), duration_ms)
+    except ToolExecutionError as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_error(TOOL_GENERATE_ANSWER, e.code, e.message, duration_ms)
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_error(TOOL_GENERATE_ANSWER, "INTERNAL_ERROR", str(e), duration_ms)
 
-    return run_tool(TOOL_GENERATE_ANSWER, _execute)
 
-
+@tool
 def kb_answer_question(input_data: KBAnswerQuestionInput | Dict[str, Any]) -> Dict[str, Any]:
-    payload = input_data if isinstance(input_data, KBAnswerQuestionInput) else KBAnswerQuestionInput(**input_data)
-
-    def _execute() -> Dict[str, Any]:
+    """Full RAG pipeline: rewrite → retrieve → assemble → answer (agent tool)."""
+    start = time.perf_counter()
+    try:
+        payload = input_data if isinstance(input_data, KBAnswerQuestionInput) else KBAnswerQuestionInput(**input_data)
         question = normalize_whitespace(payload.question)
         if not question:
             raise ToolExecutionError("EMPTY_QUESTION", "question cannot be empty")
 
-        # Get history
         history: List[Dict[str, Any]] = []
         if payload.use_chat_context and payload.session_id:
             rows = get_chat_messages(payload.session_id, limit=CHAT_HISTORY_LIMIT) or []
@@ -339,17 +326,12 @@ def kb_answer_question(input_data: KBAnswerQuestionInput | Dict[str, Any]) -> Di
                 if r.get("role") in {"user", "assistant"}
             ]
 
-        # Rewrite query
         rewritten_query = _rewrite_query_with_history(history, question) if history else question
-
-        # Retrieve chunks
         raw_chunks = retrieve_chunks(rewritten_query, top_k=payload.top_k) or []
 
-        # Assemble context
         context = _assemble_context(raw_chunks, max_chunks=QA_MAX_CONTEXT_CHUNKS)
         history_text = _format_history_for_prompt(history) if payload.use_chat_context else ""
 
-        # Generate answer
         answer_text = ""
         structured: Dict[str, Any] | None = None
         key_points: List[str] = []
@@ -375,14 +357,12 @@ def kb_answer_question(input_data: KBAnswerQuestionInput | Dict[str, Any]) -> Di
             answer_text = normalize_whitespace(chat_completion(system_prompt=system_prompt, user_prompt=user_prompt))
             confidence = _estimate_confidence(raw_chunks, answer_text)
 
-        # Build sources
-        highlight_terms = _extract_query_terms(question, rewritten_query, raw_chunks)
+        highlight_terms = _qa_extract_query_terms(question, rewritten_query, raw_chunks)
         sources = _build_sources(raw_chunks, highlight=payload.highlight, highlight_terms=highlight_terms, limit=min(5, payload.top_k))
 
         if structured is not None:
             structured["sources"] = [s.model_dump() for s in sources]
 
-        # Convert raw_chunks to SearchHit-like dicts
         retrieved_chunks = [
             {
                 "chunk_id": c.get("chunk_id"),
@@ -400,7 +380,8 @@ def kb_answer_question(input_data: KBAnswerQuestionInput | Dict[str, Any]) -> Di
             for c in raw_chunks
         ]
 
-        return KBAnswerQuestionOutput(
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_ok(TOOL_ANSWER_QUESTION, KBAnswerQuestionOutput(
             question=question,
             rewritten_query=rewritten_query,
             answer=answer_text,
@@ -409,6 +390,10 @@ def kb_answer_question(input_data: KBAnswerQuestionInput | Dict[str, Any]) -> Di
             sources=sources,
             retrieved_chunks=retrieved_chunks,
             session_id=payload.session_id or "",
-        ).model_dump()
-
-    return run_tool(TOOL_ANSWER_QUESTION, _execute)
+        ).model_dump(), duration_ms)
+    except ToolExecutionError as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_error(TOOL_ANSWER_QUESTION, e.code, e.message, duration_ms)
+    except Exception as e:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        return make_error(TOOL_ANSWER_QUESTION, "INTERNAL_ERROR", str(e), duration_ms)

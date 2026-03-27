@@ -837,6 +837,27 @@ def score_run(
         eval_id = result.get("id", "")
         sample = sample_by_id.get(eval_id, {})
 
+        # Fallback: if dataset lookup missed (e.g. empty id from run_financebench_eval),
+        # pull gold fields directly from the result dict so scoring still works.
+        if not sample:
+            sample = {
+                "id": eval_id,
+                "gold_doc_name": result.get("gold_doc_name", ""),
+                "gold_pages": result.get("gold_pages") or [],
+                "gold_evidence_texts": result.get("gold_evidence_texts") or [],
+                "gold_chunk_ids": result.get("gold_chunk_ids") or [],
+                "gold_chunk_status": result.get("gold_chunk_status", "unresolved"),
+                "gold_chunk_match_method": result.get("gold_chunk_match_method", ""),
+                "retrieval": result.get("retrieval") or {},
+                "answer": {
+                    "gold_answer": result.get("gold_answer", ""),
+                    "must_include": result.get("answer", {}).get("must_include", []),
+                },
+                "evaluation": {
+                    "expected_behavior": result.get("evaluation", {}).get("expected_behavior", "answer"),
+                },
+            }
+
         retrieved_chunks = result.get("retrieved_chunks", [])
 
         # Build pred_doc_names (deduplicated, in score order)
@@ -934,6 +955,17 @@ def score_run(
         scores["gold_chunk_ids"] = sample.get("retrieval", {}).get("gold_chunk_ids", [])
         scores["gold_chunk_status"] = sample.get("gold_chunk_status", "unresolved")
         scores["gold_chunk_match_method"] = sample.get("gold_chunk_match_method", "")
+
+        # Transparency: was retrieval actually scored vs. skipped due to missing gold?
+        label_status = sample.get("retrieval", {}).get("label_status", "unlabeled")
+        scores["retrieval_label_status"] = label_status
+        retrieval_scored = label_status in {"labeled_doc", "labeled_chunk"}
+        scores["retrieval_scored"] = retrieval_scored
+        scores["retrieval_skip_reason"] = (
+            "" if retrieval_scored else
+            ("no_gold_doc_ids" if not sample.get("retrieval", {}).get("gold_doc_ids") else
+             "unlabeled_or_unanswerable")
+        )
 
         # V4 metrics: extract from result metadata if available
         result_metadata = result.get("metadata") or {}
