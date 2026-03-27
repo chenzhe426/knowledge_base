@@ -30,7 +30,7 @@
     "evidence_lexical_hit_at_5": "9/15"
   },
   "answer_level": {
-    "numeric_match": "8/15 (53.3%)",
+    "numeric_match": "9/15 (60.0%)",
     "normalized_exact_match": "0/15 (0.0%)",
     "label_distribution": {
       "partial": 11,
