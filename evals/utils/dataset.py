@@ -33,6 +33,8 @@ class RetrievalBlock:
     gold_doc_ids: list[int] = field(default_factory=list)
     gold_chunk_ids: list[int] = field(default_factory=list)
     hard_negative_chunk_ids: list[int] = field(default_factory=list)
+    # Section-level gold label (section title or path containing the gold evidence)
+    gold_evidence_section: str = ""
 
 
 @dataclass
@@ -95,13 +97,20 @@ class EvalSample:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> EvalSample:
+        # Handle question field: can be a plain string or a QuestionBlock dict
+        question_raw = d.get("question", {})
+        if isinstance(question_raw, str):
+            question_block = QuestionBlock(user_query=question_raw)
+        else:
+            question_block = QuestionBlock(**question_raw)
+
         return cls(
             id=str(d.get("id", "")),
             dataset=str(d.get("dataset", "kb_eval_seed")),
             task_type=str(d.get("task_type", "factoid")),
             difficulty=str(d.get("difficulty", "easy")),
             tags=list(d.get("tags", [])),
-            question=QuestionBlock(**d.get("question", {})),
+            question=question_block,
             retrieval=RetrievalBlock(**d.get("retrieval", {})),
             context=ContextBlock(**d.get("context", {})),
             answer=AnswerBlock(**d.get("answer", {})),

@@ -102,6 +102,14 @@ def build_json_report(
                 "mrr": cr.get("retrieval_mrr"),
                 "recall_at_5": cr.get("retrieval_recall_at_5"),
                 "skipped": cr.get("retrieval_skipped", False),
+                # New P0 page-level
+                "page_strict_hit_at_5": cr.get("retrieval_page_strict_hit_at_5"),
+                "page_relaxed_hit_at_5": cr.get("retrieval_page_relaxed_hit_at_5"),
+                # New P0 section-level
+                "section_hit_at_5": cr.get("retrieval_section_hit_at_5"),
+                # New P0 evidence semantic
+                "evidence_semantic_hit_at_5": cr.get("evidence_semantic_hit_at_5"),
+                "evidence_lexical_hit_at_5": cr.get("evidence_lexical_hit_at_5"),
             },
             "retrieved_chunks": retrieved_chunks_out,
             "final_answer": cr.get("final_answer", ""),
@@ -110,6 +118,21 @@ def build_json_report(
             "must_not_include_violations": cr.get("must_not_include_violations", []),
             "latency_ms": round(cr.get("latency_ms", 0.0), 2),
             "error": cr.get("error", ""),
+            # P1 failure reason
+            "_failure_reason": cr.get("_failure_reason", ""),
+            # V4 pipeline fields
+            "v4_answer_supported": cr.get("v4_answer_supported"),
+            "v4_support_level": cr.get("v4_support_level"),
+            "v4_numeric_consistent": cr.get("v4_numeric_consistent"),
+            "v4_citation_adequate": cr.get("v4_citation_adequate"),
+            "v4_failure_reasons": cr.get("v4_failure_reasons", []),
+            "v4_missing_requirements": cr.get("v4_missing_requirements", []),
+            "v4_verifier_method": cr.get("v4_verifier_method"),
+            "v4_was_refined": cr.get("v4_was_refined"),
+            "v4_refinement_round": cr.get("v4_refinement_round"),
+            "v4_refine_trigger": cr.get("v4_refine_trigger"),
+            "v4_verifier_fallback": cr.get("v4_verifier_fallback"),
+            "v4_refine_fallback": cr.get("v4_refine_fallback"),
         })
 
     return {
@@ -167,18 +190,46 @@ def build_markdown_report(report: dict[str, Any]) -> str:
         f"| Hit@5 | {retr.get('hit_at_5', 0.0)} |",
         f"| Recall@5 | {retr.get('recall_at_5', 0.0)} |",
         f"| MRR | {retr.get('mrr', 0.0)} |",
+        f"| Page strict hit@5 | {retr.get('page_strict_hit_at_5', 'N/A')} |",
+        f"| Page relaxed hit@5 | {retr.get('page_relaxed_hit_at_5', 'N/A')} |",
+        f"| Section hit@5 | {retr.get('section_hit_at_5', 'N/A')} |",
+        f"| Evidence semantic hit@5 | {retr.get('evidence_semantic_hit_at_5', 'N/A')} |",
+        f"| Evidence lexical hit@5 | {retr.get('evidence_lexical_hit_at_5', 'N/A')} |",
         "",
         "### Answer",
         "",
         f"| Label | Count |",
         f"|-------|-------|",
-        f"| exact | {ans.get('exact', 0)} |",
-        f"| partial | {ans.get('partial', 0)} |",
-        f"| wrong | {ans.get('wrong', 0)} |",
-        f"| refuse_correct | {ans.get('refuse_correct', 0)} |",
-        f"| refuse_wrong | {ans.get('refuse_wrong', 0)} |",
-        f"| clarify_correct | {ans.get('clarify_correct', 0)} |",
-        f"| clarify_wrong | {ans.get('clarify_wrong', 0)} |",
+        f"| exact | {ans.get('label_counts', {}).get('exact', 0)} |",
+        f"| partial | {ans.get('label_counts', {}).get('partial', 0)} |",
+        f"| wrong | {ans.get('label_counts', {}).get('wrong', 0)} |",
+        f"| refuse_correct | {ans.get('label_counts', {}).get('refuse_correct', 0)} |",
+        f"| refuse_wrong | {ans.get('label_counts', {}).get('refuse_wrong', 0)} |",
+        f"| clarify_correct | {ans.get('label_counts', {}).get('clarify_correct', 0)} |",
+        f"| clarify_wrong | {ans.get('label_counts', {}).get('clarify_wrong', 0)} |",
+        "",
+        "### V4 Pipeline (answer verifier + self-refine)",
+        "",
+        f"| Metric | Value |",
+        f"|--------|-------|",
+        f"| Answer supported rate | {ans.get('answer_supported_rate', 'N/A')} |",
+        f"| Answer refined rate | {ans.get('answer_refined_rate', 'N/A')} |",
+        f"| Numeric verifier pass rate | {ans.get('numeric_verifier_pass_rate', 'N/A')} |",
+        f"| Citation adequate rate | {ans.get('citation_adequate_rate', 'N/A')} |",
+        "",
+        "### V4 Fallback Rates (lower is better)",
+        "",
+        f"| Metric | Value |",
+        f"|--------|-------|",
+        f"| Verifier fallback rate | {ans.get('verifier_fallback_rate', 'N/A')} |",
+        f"| Refine fallback rate | {ans.get('refine_fallback_rate', 'N/A')} |",
+        f"| LLM rerank fallback rate | {retr.get('llm_rerank_fallback_rate', 'N/A')} |",
+        "",
+        "### LLM Reranker",
+        "",
+        f"| Metric | Value |",
+        f"|--------|-------|",
+        f"| LLM rerank hit@5 | {retr.get('llm_rerank_hit5', 'N/A')} |",
         "",
         "---",
         "",
@@ -241,11 +292,19 @@ def build_markdown_report(report: dict[str, Any]) -> str:
                 reason_parts.append(f"answer={case['answer_label']}")
             if not case.get("retrieval", {}).get("hit_at_5"):
                 reason_parts.append("retrieval_miss")
+            # P1: failure reason
+            failure_reason = case.get("_failure_reason", "")
+            if failure_reason:
+                reason_parts.append(f"reason={failure_reason}")
+            retr = case.get("retrieval", {})
             lines.append(f"### [{case['id']}] {case['question'][:60]}")
             lines.append("")
             lines.append(f"- Labels: {', '.join(reason_parts)}")
             lines.append(f"- Retrieved: {case.get('retrieved_chunk_ids', [])}")
             lines.append(f"- Gold: {case.get('gold_chunk_ids', [])}")
+            lines.append(f"- Section hit@5: {retr.get('section_hit_at_5', 'N/A')}")
+            lines.append(f"- Evidence semantic hit@5: {retr.get('evidence_semantic_hit_at_5', 'N/A')}")
+            lines.append(f"- Evidence lexical hit@5: {retr.get('evidence_lexical_hit_at_5', 'N/A')}")
             answer_snippet = (case.get("final_answer") or "")[:120]
             lines.append(f"- Answer: {answer_snippet}")
             lines.append("")
@@ -486,6 +545,17 @@ def _aggregate_retrieval(cases: list[dict[str, Any]]) -> dict[str, Any]:
     mrr_sum = sum(c.get("retrieval_mrr", 0.0) for c in labeled) / n
     recall_sum = sum(c.get("retrieval_recall_at_5", 0.0) for c in labeled) / n
 
+    # P0: page-level (strict + relaxed)
+    page_hit5 = sum(1 for c in labeled if c.get("retrieval_page_strict_hit_at_5")) / n if n > 0 else 0.0
+    page_relaxed_hit5 = sum(1 for c in labeled if c.get("retrieval_page_relaxed_hit_at_5")) / n if n > 0 else 0.0
+
+    # P0: section-level
+    section_hit5 = sum(1 for c in labeled if c.get("retrieval_section_hit_at_5")) / n if n > 0 else 0.0
+
+    # P0: evidence semantic
+    ev_sem_hit5 = sum(1 for c in labeled if c.get("evidence_semantic_hit_at_5")) / n if n > 0 else 0.0
+    ev_lex_hit5 = sum(1 for c in labeled if c.get("evidence_lexical_hit_at_5")) / n if n > 0 else 0.0
+
     return {
         "hit_at_1": round(hit1, 4),
         "hit_at_3": round(hit3, 4),
@@ -493,10 +563,19 @@ def _aggregate_retrieval(cases: list[dict[str, Any]]) -> dict[str, Any]:
         "recall_at_5": round(recall_sum, 4),
         "mrr": round(mrr_sum, 4),
         "labeled_cases": n,
+        # P0
+        "page_strict_hit_at_5": round(page_hit5, 4),
+        "page_relaxed_hit_at_5": round(page_relaxed_hit5, 4),
+        "section_hit_at_5": round(section_hit5, 4),
+        "evidence_semantic_hit_at_5": round(ev_sem_hit5, 4),
+        "evidence_lexical_hit_at_5": round(ev_lex_hit5, 4),
+        # V4: LLM reranker
+        "llm_rerank_hit5": round(sum(1 for c in labeled if c.get("llm_rerank_applied") and c.get("section_hit_at_5")) / n, 4) if n > 0 else 0.0,
+        "llm_rerank_fallback_rate": round(sum(1 for c in labeled if c.get("llm_rerank_fallback")) / n, 4) if n > 0 else 0.0,
     }
 
 
-def _aggregate_answer(cases: list[dict[str, Any]]) -> dict[str, int]:
+def _aggregate_answer(cases: list[dict[str, Any]]) -> dict[str, Any]:
     labels = [
         "exact", "partial", "wrong",
         "refuse_correct", "refuse_wrong",
@@ -507,7 +586,25 @@ def _aggregate_answer(cases: list[dict[str, Any]]) -> dict[str, int]:
         label = c.get("answer_label", "")
         if label in counts:
             counts[label] += 1
-    return counts
+    # V4 metrics
+    n = len(cases)
+    answer_supported = sum(1 for c in cases if c.get("v4_answer_supported") is True)
+    was_refined = sum(1 for c in cases if c.get("v4_was_refined") is True)
+    numeric_consistent = sum(1 for c in cases if c.get("v4_numeric_consistent") is True)
+    citation_adequate = sum(1 for c in cases if c.get("v4_citation_adequate") is True)
+    verifier_fallback = sum(1 for c in cases if c.get("v4_verifier_fallback"))
+    refine_fallback = sum(1 for c in cases if c.get("v4_refine_fallback"))
+    return {
+        "label_counts": counts,
+        # V4 pipeline
+        "answer_supported_rate": round(answer_supported / n, 4) if n > 0 else 0.0,
+        "answer_refined_rate": round(was_refined / n, 4) if n > 0 else 0.0,
+        "numeric_verifier_pass_rate": round(numeric_consistent / n, 4) if n > 0 else 0.0,
+        "citation_adequate_rate": round(citation_adequate / n, 4) if n > 0 else 0.0,
+        # V4 fallback rates
+        "verifier_fallback_rate": round(verifier_fallback / n, 4) if n > 0 else 0.0,
+        "refine_fallback_rate": round(refine_fallback / n, 4) if n > 0 else 0.0,
+    }
 
 
 def _delta(v: float) -> str:

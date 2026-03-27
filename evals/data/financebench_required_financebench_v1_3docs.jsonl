@@ -1,0 +1,3 @@
+{"doc_name": "AMD_2022_10K", "company": "AMD", "doc_type": "10k", "doc_period": 2022, "gics_sector": "Information Technology", "source_path_or_url": "/home/cz/python/knowledge_base/data/financebench/pdfs/AMD_2022_10K.pdf", "pdf_available": true}
+{"doc_name": "AMERICANEXPRESS_2022_10K", "company": "American Express", "doc_type": "10k", "doc_period": 2022, "gics_sector": "Financials", "source_path_or_url": "/home/cz/python/knowledge_base/data/financebench/pdfs/AMERICANEXPRESS_2022_10K.pdf", "pdf_available": true}
+{"doc_name": "BOEING_2022_10K", "company": "Boeing", "doc_type": "10k", "doc_period": 2022, "gics_sector": "Industrials", "source_path_or_url": "/home/cz/python/knowledge_base/data/financebench/pdfs/BOEING_2022_10K.pdf", "pdf_available": true}

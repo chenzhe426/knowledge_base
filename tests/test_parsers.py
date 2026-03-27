@@ -398,6 +398,52 @@ class TestPdfParser:
         parser = PdfParser()
         assert hasattr(parser, "parse")
 
+    def test_pdf_fallback_rawtext_succeeds_for_complex_pdf(self):
+        """
+        Tier-2 fallback test: if all structured parsers return 0 blocks,
+        the fitz raw-text fallback should still produce blocks for a
+        readable (non-scanned) PDF.
+
+        This requires a real PDF with text that defeats docling/pdfplumber/pymupdf
+        block extraction.  The 3M 2015 10-K in data/financebench/pdfs/ is such a file.
+        """
+        pdf_path = ROOT / "data" / "financebench" / "pdfs" / "3M_2015_10K.pdf"
+        if not pdf_path.exists():
+            pytest.skip("3M_2015_10K.pdf not found")
+
+        parser = PdfParser()
+        doc = parser.parse(str(pdf_path))
+
+        # Must not raise RuntimeError — fallback should succeed
+        assert doc.file_type == "pdf"
+        assert doc.metadata.get("parser_used") == "fitz_rawtext_fallback"
+        assert doc.metadata.get("fallback_used") is True
+        assert len(doc.blocks) > 0, "fallback should have produced blocks"
+        assert len(doc.content) > 0, "content should not be empty"
+
+        # All blocks should be tagged as pdf source
+        for b in doc.blocks:
+            assert b.get("source_format") == "pdf"
+            assert b.get("text"), "block text should not be empty"
+
+        # Should have page numbers
+        pages = {b.get("page") for b in doc.blocks if b.get("page") is not None}
+        assert len(pages) > 0, "should have page info"
+
+    def test_pdf_fallback_metadata_has_reason(self):
+        """Fallback path should include clear reason and scores in metadata."""
+        pdf_path = ROOT / "data" / "financebench" / "pdfs" / "3M_2015_10K.pdf"
+        if not pdf_path.exists():
+            pytest.skip("3M_2015_10K.pdf not found")
+
+        parser = PdfParser()
+        doc = parser.parse(str(pdf_path))
+
+        reason = doc.metadata.get("selection_reason", "")
+        assert "fitz" in reason or "fallback" in reason.lower()
+        assert "quality_score" in doc.metadata
+        assert doc.metadata.get("likely_scanned_pdf") is False
+
 
 # ---------------------------------------------------------------------------
 # G. Pipeline integration

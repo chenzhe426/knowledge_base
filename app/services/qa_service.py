@@ -14,7 +14,7 @@ from app.db import (
 )
 from app.services.common import normalize_whitespace, safe_get, to_float
 from app.services.llm_service import chat_completion, summarize_text
-from app.services.retrieval_service import retrieve_chunks
+from app.services.retrieval_service import retrieve_chunks, enhance_financial_query, classify_query_intent
 
 
 def _cfg(name: str, default: Any):
@@ -26,6 +26,13 @@ CHAT_SUMMARY_TRIGGER_TURNS = int(_cfg("CHAT_SUMMARY_TRIGGER_TURNS", 12))
 QA_MAX_CONTEXT_CHUNKS = int(_cfg("QA_MAX_CONTEXT_CHUNKS", 6))
 QA_STRUCTURED_ENABLE = bool(_cfg("QA_STRUCTURED_ENABLE", True))
 QA_HIGHLIGHT_ENABLE = bool(_cfg("QA_HIGHLIGHT_ENABLE", True))
+
+# V4 pipeline params — read from app.config directly
+V4_ENABLE_ANSWER_VERIFIER = bool(_cfg("V4_ENABLE_ANSWER_VERIFIER", True))
+V4_ENABLE_SELF_REFINE = bool(_cfg("V4_ENABLE_SELF_REFINE", False))
+V4_MAX_REFINE_ROUNDS = int(_cfg("V4_MAX_REFINE_ROUNDS", 1))
+V4_ANSWER_USE_STRUCTURED_OUTPUT = bool(_cfg("V4_ANSWER_USE_STRUCTURED_OUTPUT", True))
+V4_NUMERIC_FIRST_FOR_NUMERIC_QUERIES = bool(_cfg("V4_NUMERIC_FIRST_FOR_NUMERIC_QUERIES", True))
 
 
 def _new_session_id() -> str:
@@ -146,6 +153,7 @@ def _normalize_retrieved_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
         "document_id": chunk.get("document_id"),
         "chunk_index": chunk.get("chunk_index"),
         "score": to_float(chunk.get("score")),
+        "rerank_score": to_float(chunk.get("rerank_score")),
         "embedding_score": to_float(chunk.get("embedding_score")),
         "keyword_score": to_float(chunk.get("keyword_score")),
         "bm25_score": to_float(chunk.get("bm25_score")),
@@ -163,6 +171,7 @@ def _normalize_retrieved_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
         "term_hits": chunk.get("term_hits") or {},
         "term_hit_detail": chunk.get("term_hit_detail") or {},
         "is_neighbor": bool(chunk.get("is_neighbor", False)),
+        "_retrieval_query": chunk.get("_retrieval_query"),
     }
 
 
@@ -180,11 +189,11 @@ def assemble_context(chunks: list[dict[str, Any]], max_chunks: int = QA_MAX_CONT
         chunk_text = normalize_whitespace(chunk.get("search_text") or chunk.get("chunk_text") or "")
 
         part = [
-            f"[来源 {idx}]",
-            f"文档：{title or '-'}",
-            f"章节：{section_title or section_path or '-'}",
-            f"页码：{page_label}",
-            "内容：",
+            f"[Source {idx}]",
+            f"Document: {title or '-'}",
+            f"Section: {section_title or section_path or '-'}",
+            f"Page: {page_label}",
+            "Content:",
             chunk_text,
         ]
         context_parts.append("\n".join(part))
@@ -205,8 +214,8 @@ def _format_history_for_prompt(history: list[dict[str, Any]], limit: int = CHAT_
         if not message:
             continue
 
-        role_label = "用户" if role == "user" else "助手" if role == "assistant" else "系统"
-        lines.append(f"{role_label}：{message}")
+        role_label = "User" if role == "user" else "Assistant" if role == "assistant" else "System"
+        lines.append(f"{role_label}: {message}")
 
     return "\n".join(lines).strip()
 
@@ -224,17 +233,18 @@ def rewrite_query_with_history(history: list[dict[str, Any]], question: str) -> 
         return question
 
     system_prompt = (
-        "你是一个查询改写助手。"
-        "你的任务是把用户当前问题改写成适合知识库检索的独立查询。"
-        "要求："
-        "1. 保留原意，不要扩展无关信息；"
-        "2. 若当前问题依赖上文代词或省略（如“它”“这个”“第二点”），要补全成完整表达；"
-        "3. 只输出改写后的单句查询，不要解释。"
+        "You are a query rewriting assistant. Rewrite the user's current question into "
+        "a standalone query suitable for knowledge base retrieval.\n"
+        "Requirements:\n"
+        "1. Preserve original intent; do not expand with unrelated information.\n"
+        "2. If the current question depends on pronouns or ellipsis from context "
+        "(e.g. 'it', 'this', 'the second point'), complete the expression.\n"
+        "3. Output only the rewritten single-sentence query, no explanation."
     )
     user_prompt = (
-        f"对话历史：\n{history_text}\n\n"
-        f"当前问题：\n{question}\n\n"
-        f"请输出改写后的检索查询："
+        f"Conversation history:\n{history_text}\n\n"
+        f"Current question:\n{question}\n\n"
+        f"Rewritten retrieval query:"
     )
 
     try:
@@ -251,25 +261,36 @@ def _build_answer_prompt(
     history_text: str = "",
 ) -> tuple[str, str]:
     system_prompt = (
-        "你是一个基于知识库回答问题的助手。"
-        "你必须优先依据提供的上下文回答。"
-        "如果上下文不足以支持结论，要明确说“知识库中没有足够信息支持该结论”。"
-        "不要编造页码、来源或事实。"
-        "回答要准确、简洁、中文输出。"
+        "You are a financial document Q&A assistant drawing from a trusted knowledge base.\n\n"
+        "PRIORITIES (in order):\n"
+        "1. NUMBERS FIRST: Always lead with specific figures -- percentages, dollar amounts, "
+        "ratios, units, years. Cite them verbatim from context.\n"
+        "2. ENGLISH OUTPUT: Answer in English unless the user explicitly asks in Chinese.\n"
+        "3. DRIVER/IMPACT QUESTIONS: If the question asks 'what drove', 'what caused', "
+        "'what is the impact of', structure your answer as:\n"
+        "   - Positive drivers (+X% / $X / X basis points)\n"
+        "   - Negative drivers (-X% / -$X / -X basis points)\n"
+        "   - Quantified impact (X% of total change attributable to this factor)\n"
+        "4. NO VAGUE REFUSALS: If the context contains relevant evidence, give a grounded answer. "
+        "Only say 'insufficient information' if the context genuinely does not address the question. "
+        "Do NOT use templates like 'no information in knowledge base' when evidence exists.\n"
+        "5. ACCURACY: Never fabricate page numbers, sources, or facts. "
+        "If context does not support a conclusion, state what IS supported.\n"
+        "6. BREVITY: Short and direct. One short paragraph unless complexity demands more."
     )
 
     user_parts = []
     if history_text:
-        user_parts.append("对话历史：")
+        user_parts.append("Conversation history:")
         user_parts.append(history_text)
         user_parts.append("")
 
-    user_parts.append("知识库上下文：")
-    user_parts.append(context or "（无可用上下文）")
+    user_parts.append("Knowledge base context:")
+    user_parts.append(context or "(no context available)")
     user_parts.append("")
-    user_parts.append(f"问题：{question}")
+    user_parts.append(f"Question: {question}")
     user_parts.append("")
-    user_parts.append("请直接给出答案。")
+    user_parts.append("Answer:")
 
     user_prompt = "\n".join(user_parts)
     return system_prompt, user_prompt
@@ -281,26 +302,32 @@ def _build_structured_answer_prompt(
     history_text: str = "",
 ) -> tuple[str, str]:
     system_prompt = (
-        "你是一个基于知识库回答问题的助手。"
-        "你必须严格依据上下文作答，不要编造。"
-        "输出必须是合法 JSON，且只输出 JSON，不要有额外解释。"
-        'JSON 格式如下：{"answer":"","summary":"","key_points":[],"confidence":0.0}'
-        "其中 confidence 为 0 到 1 之间的小数。"
-        "如果上下文不足，answer 和 summary 中要明确说明信息不足。"
+        "You are a financial document Q&A assistant drawing from a trusted knowledge base.\n\n"
+        "PRIORITIES:\n"
+        "1. NUMBERS FIRST: Lead with specific figures -- percentages, dollar amounts, ratios.\n"
+        "2. ENGLISH OUTPUT: Answer in English unless the user explicitly asks in Chinese.\n"
+        "3. DRIVER/IMPACT QUESTIONS: For 'what drove' / 'what caused' questions, use these JSON fields:\n"
+        "   {'answer':'<brief direct answer with numbers first>',\n"
+        "    'positive_drivers':['<driver 1 with quantified impact>',...],\n"
+        "    'negative_drivers':['<driver 1 with quantified impact>',...],\n"
+        "    'key_points':['<supporting fact 1>',...],\n"
+        "    'confidence':0.0}\n"
+        "4. NO VAGUE REFUSALS: Only state insufficient information when context genuinely lacks evidence.\n"
+        "5. Output ONLY valid JSON. No markdown, no explanation."
     )
 
     user_parts = []
     if history_text:
-        user_parts.append("对话历史：")
+        user_parts.append("Conversation history:")
         user_parts.append(history_text)
         user_parts.append("")
 
-    user_parts.append("知识库上下文：")
-    user_parts.append(context or "（无可用上下文）")
+    user_parts.append("Knowledge base context:")
+    user_parts.append(context or "(no context available)")
     user_parts.append("")
-    user_parts.append(f"问题：{question}")
+    user_parts.append(f"Question: {question}")
     user_parts.append("")
-    user_parts.append("请输出 JSON：")
+    user_parts.append("Output JSON:")
 
     user_prompt = "\n".join(user_parts)
     return system_prompt, user_prompt
@@ -311,7 +338,8 @@ def _safe_parse_structured_answer(raw_text: str) -> dict[str, Any]:
     if not raw_text:
         return {
             "answer": "",
-            "summary": "",
+            "positive_drivers": [],
+            "negative_drivers": [],
             "key_points": [],
             "confidence": 0.0,
         }
@@ -325,7 +353,8 @@ def _safe_parse_structured_answer(raw_text: str) -> dict[str, Any]:
         if isinstance(data, dict):
             return {
                 "answer": normalize_whitespace(data.get("answer", "")),
-                "summary": normalize_whitespace(data.get("summary", "")),
+                "positive_drivers": data.get("positive_drivers") if isinstance(data.get("positive_drivers"), list) else [],
+                "negative_drivers": data.get("negative_drivers") if isinstance(data.get("negative_drivers"), list) else [],
                 "key_points": data.get("key_points") if isinstance(data.get("key_points"), list) else [],
                 "confidence": float(data.get("confidence", 0.0) or 0.0),
             }
@@ -334,10 +363,46 @@ def _safe_parse_structured_answer(raw_text: str) -> dict[str, Any]:
 
     return {
         "answer": normalize_whitespace(raw_text),
-        "summary": "",
+        "positive_drivers": [],
+        "negative_drivers": [],
         "key_points": [],
         "confidence": 0.0,
     }
+
+
+def _extract_cited_evidence_ids(answer_text: str, retrieved_chunks: list[dict[str, Any]]) -> list[str]:
+    """
+    Extract cited evidence IDs from answer text.
+    Matches patterns like [E1], [E2], source 1, source 2, etc.
+    """
+    if not answer_text or not retrieved_chunks:
+        return []
+
+    cited: list[str] = []
+    answer_lower = answer_text.lower()
+
+    for i, chunk in enumerate(retrieved_chunks[:5]):
+        chunk_id = str(chunk.get("chunk_id") or chunk.get("id") or f"E{i+1}")
+        # Check if chunk_id or E{i+1} is mentioned in answer
+        if chunk_id.lower() in answer_lower or f"e{i+1}" in answer_lower or f"source {i+1}" in answer_lower:
+            if chunk_id not in cited:
+                cited.append(chunk_id)
+
+    return cited
+
+
+def _augment_answer_with_citations(answer_text: str, cited_ids: list[str]) -> str:
+    """Add evidence citation suffix to answer text if not already present."""
+    if not answer_text or not cited_ids:
+        return answer_text
+
+    # Check if answer already has citations
+    import re
+    if re.search(r"\[E\d+\]|\[Source \d+\]|\[\d+\]", answer_text):
+        return answer_text
+
+    citation_str = " [Evidence: " + ", ".join(f"[{cid}]" for cid in cited_ids[:3]) + "]"
+    return answer_text + citation_str
 
 
 def _estimate_confidence(retrieved_chunks: list[dict[str, Any]], answer_text: str) -> float:
@@ -350,7 +415,11 @@ def _estimate_confidence(retrieved_chunks: list[dict[str, Any]], answer_text: st
     )
 
     confidence = 0.55 * top_score + 0.45 * avg_top3
-    if "没有足够信息" in (answer_text or ""):
+    # Penalize vague refusal language
+    refusal_phrases = {"insufficient information", "not enough information", "cannot confirm",
+                       "no relevant", "not sufficient", "cannot determine", "insufficient context"}
+    answer_lower = (answer_text or "").lower()
+    if any(rp in answer_lower for rp in refusal_phrases):
         confidence *= 0.65
 
     return round(max(0.0, min(1.0, confidence)), 4)
@@ -410,6 +479,9 @@ def answer_question(
     highlight: bool = True,
     session_id: str | None = None,
     use_chat_context: bool = True,
+    retrieve_top_k: int | None = None,
+    enable_query_enhance: bool = False,
+    use_multistage: bool = False,
 ) -> dict[str, Any]:
     question = normalize_whitespace(question)
     if not question:
@@ -439,7 +511,20 @@ def answer_question(
     history = get_chat_messages(session_id, limit=CHAT_HISTORY_LIMIT) if use_chat_context else []
     rewritten_query = rewrite_query_with_history(history, question) if use_chat_context else question
 
-    raw_retrieved_chunks = retrieve_chunks(rewritten_query, top_k=top_k)
+    # Two-stage retrieval: retrieve_top_k > top_k means fetch more, rerank, then truncate
+    effective_retrieve_top_k = retrieve_top_k if retrieve_top_k is not None else top_k
+
+    # Query enhancement: augment query for retrieval only (answer uses original question)
+    enhanced_query = None
+    if enable_query_enhance:
+        enhanced_query = enhance_financial_query(rewritten_query)
+
+    raw_retrieved_chunks = retrieve_chunks(
+        rewritten_query,
+        top_k=effective_retrieve_top_k,
+        enhanced_query=enhanced_query,
+        use_multistage=use_multistage,
+    )
     retrieved_chunks = [_normalize_retrieved_chunk(chunk) for chunk in raw_retrieved_chunks]
 
     context = assemble_context(raw_retrieved_chunks, max_chunks=QA_MAX_CONTEXT_CHUNKS)
@@ -447,6 +532,11 @@ def answer_question(
 
     structured = None
     answer_text = ""
+    intent = "unknown"
+    try:
+        intent = classify_query_intent(question)
+    except Exception:
+        pass
 
     if response_mode == "structured" and QA_STRUCTURED_ENABLE:
         system_prompt, user_prompt = _build_structured_answer_prompt(
@@ -460,10 +550,13 @@ def answer_question(
         answer_text = parsed.get("answer", "") or ""
         structured = {
             "answer": answer_text,
-            "summary": parsed.get("summary", "") or "",
+            "positive_drivers": parsed.get("positive_drivers", []) or [],
+            "negative_drivers": parsed.get("negative_drivers", []) or [],
             "key_points": parsed.get("key_points", []) or [],
             "sources": [],
             "confidence": float(parsed.get("confidence", 0.0) or 0.0),
+            "cited_evidence_ids": [],
+            "answer_type": intent,
         }
     else:
         system_prompt, user_prompt = _build_answer_prompt(
@@ -474,6 +567,14 @@ def answer_question(
         answer_text = normalize_whitespace(
             chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
         )
+
+    # V4: Add evidence citations to answer text
+    cited_evidence_ids: list[str] = []
+    if answer_text and raw_retrieved_chunks:
+        cited_evidence_ids = _extract_cited_evidence_ids(answer_text, raw_retrieved_chunks)
+        if cited_evidence_ids and V4_ANSWER_USE_STRUCTURED_OUTPUT:
+            # Augment answer text with evidence IDs if not already present
+            answer_text = _augment_answer_with_citations(answer_text, cited_evidence_ids)
 
     highlight_terms = _extract_query_terms(question, rewritten_query, raw_retrieved_chunks)
     sources = _build_sources(
@@ -487,8 +588,76 @@ def answer_question(
 
     if structured is not None:
         structured["sources"] = sources
+        structured["cited_evidence_ids"] = cited_evidence_ids
         if not structured.get("confidence"):
             structured["confidence"] = confidence
+
+    # V4: Answer verification + self-refine
+    # Initialize with safe defaults
+    verification_result: dict[str, Any] = {
+        "is_supported": True,
+        "support_level": "high",
+        "numeric_consistency": None,
+        "citation_adequate": True,
+        "failure_reasons": [],
+        "missing_requirements": [],
+        "summary": "verifier_disabled",
+        "method": "disabled",
+    }
+    refine_result: dict[str, Any] = {
+        "refined_answer": "",
+        "was_refined": False,
+        "refinement_round": 0,
+        "refinement_applied": False,
+        "trigger_reason": "disabled",
+        "missing_requirements_addressed": [],
+        "method": "disabled",
+    }
+    final_answer = answer_text
+    verifier_fallback = False
+    refine_fallback = False
+
+    if V4_ENABLE_ANSWER_VERIFIER and raw_retrieved_chunks:
+        try:
+            from app.services.verifier_service import verify_answer
+            verification_result = verify_answer(
+                query=question,
+                draft_answer=answer_text,
+                evidence_chunks=raw_retrieved_chunks,
+                intent=intent,
+            )
+            final_answer = answer_text
+
+            # Track if verifier fell back
+            verifier_fallback = verification_result.get("method") == "fallback"
+
+            # V4: Self-refine using explicit trigger conditions from refine_service
+            if V4_ENABLE_SELF_REFINE:
+                from app.services.refine_service import refine_answer as _refine_answer
+                refine_result = _refine_answer(
+                    query=question,
+                    draft_answer=answer_text,
+                    verification_result=verification_result,
+                    evidence_chunks=raw_retrieved_chunks,
+                    round_num=1,
+                )
+                if refine_result.get("refinement_applied") and refine_result.get("refined_answer"):
+                    final_answer = refine_result["refined_answer"]
+                elif refine_result.get("method") == "failed":
+                    refine_fallback = True
+        except Exception:
+            # Never let verifier failure crash the pipeline
+            verification_result = {
+                "is_supported": True,
+                "support_level": "high",
+                "numeric_consistency": None,
+                "citation_adequate": True,
+                "failure_reasons": ["verifier_exception"],
+                "missing_requirements": [],
+                "summary": "verifier_exception_fallback",
+                "method": "exception",
+            }
+            verifier_fallback = True
 
     insert_chat_message(
         session_id=session_id,
@@ -500,10 +669,17 @@ def answer_question(
     insert_chat_message(
         session_id=session_id,
         role="assistant",
-        message=answer_text,
+        message=final_answer,
         rewritten_query=rewritten_query,
         sources=sources,
-        metadata={"confidence": confidence, "response_mode": response_mode},
+        metadata={
+            "confidence": confidence,
+            "response_mode": response_mode,
+            "verification": verification_result,
+            "refine": refine_result,
+            "verifier_fallback": verifier_fallback,
+            "refine_fallback": refine_fallback,
+        },
     )
 
     session = get_chat_session(session_id)
@@ -515,12 +691,16 @@ def answer_question(
     return {
         "question": question,
         "rewritten_query": rewritten_query,
-        "answer": answer_text,
+        "answer": final_answer,
+        "draft_answer": answer_text if answer_text != final_answer else None,
         "structured": structured,
         "sources": sources,
         "retrieved_chunks": retrieved_chunks,
         "confidence": confidence,
         "session_id": session_id,
+        "query_intent": intent,
+        "verification_result": verification_result,
+        "refine_result": refine_result,
     }
 
 

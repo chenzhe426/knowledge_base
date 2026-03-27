@@ -1,0 +1,35 @@
+{
+  "n": 15,
+  "document_level": {
+    "doc_hit_at_1": "10/15 (66.7%)",
+    "doc_hit_at_5": "15/15 (100.0%)",
+    "doc_mrr_avg": 0.8222
+  },
+  "page_level": {
+    "page_hit_at_1": "0/15",
+    "page_hit_at_5": "0/15",
+    "page_mrr_avg": 0.0,
+    "page_relaxed_hit_at_1": "3/15",
+    "page_relaxed_hit_at_5": "7/15",
+    "page_relaxed_mrr_avg": 0.3179
+  },
+  "evidence_text_level": {
+    "evidence_text_hit_at_1": "0/15",
+    "evidence_text_hit_at_5": "1/15",
+    "evidence_text_mrr_avg": 0.0133
+  },
+  "answer_level": {
+    "numeric_match": "9/15 (60.0%)",
+    "normalized_exact_match": "0/15 (0.0%)",
+    "label_distribution": {
+      "partial": 12,
+      "wrong": 3
+    }
+  },
+  "gold_chunk_coverage": {
+    "resolved": 0,
+    "multi_chunk": 0,
+    "page_only": 0,
+    "unresolved": 15
+  }
+}

@@ -61,6 +61,7 @@ def load_config(config_path: str | Path) -> dict:
         "top_k": 5,
         "normalize_text": True,
         "use_doc_level_fallback": True,
+        "use_multistage": False,
         "api": {"base_url": "http://127.0.0.1:8000"},
     }
     for k, v in defaults.items():
@@ -161,6 +162,23 @@ def main() -> None:
         default=None,
         help="Optional custom run ID (default: auto-generated)",
     )
+    parser.add_argument(
+        "--retrieve-top-k",
+        type=int,
+        default=None,
+        help="Two-stage retrieval: fetch this many candidates, then rerank and return top_k. "
+             "Default: same as top_k (single-stage). Set > top_k for two-stage.",
+    )
+    parser.add_argument(
+        "--enable-query-enhance",
+        action="store_true",
+        help="Enable lightweight financial query enhancement before retrieval.",
+    )
+    parser.add_argument(
+        "--multistage",
+        action="store_true",
+        help="Enable V3 multi-stage retrieval (doc → section → chunk).",
+    )
     args = parser.parse_args()
 
     # Load config
@@ -181,10 +199,24 @@ def main() -> None:
     print(f"[run_eval] Loaded {len(samples)} samples from {dataset_path.name}")
     print(f"[run_eval] Mode: {config.get('mode', 'internal')}, top_k: {config.get('top_k', 5)}")
 
+    # CLI args override config
+    retrieve_top_k = args.retrieve_top_k if args.retrieve_top_k is not None else config.get("retrieve_top_k")
+    enable_query_enhance = args.enable_query_enhance or config.get("enable_query_enhance", False)
+    use_multistage = args.multistage or config.get("use_multistage", False)
+    if retrieve_top_k:
+        print(f"[run_eval] Two-stage retrieval: retrieve_top_k={retrieve_top_k}, answer_top_k={config.get('top_k', 5)}")
+    if enable_query_enhance:
+        print(f"[run_eval] Query enhancement: enabled")
+    if use_multistage:
+        print(f"[run_eval] V3 multi-stage retrieval: enabled (doc → section → chunk)")
+
     # Initialize adapter and scorers
     adapter = EvalAdapter(
         mode=config.get("mode", "internal"),
         top_k=config.get("top_k", 5),
+        retrieve_top_k=retrieve_top_k,
+        enable_query_enhance=enable_query_enhance,
+        use_multistage=use_multistage,
         api_base_url=config.get("api", {}).get("base_url", "http://127.0.0.1:8000"),
     )
     retrieval_scorer = RetrievalScorer(
@@ -224,6 +256,13 @@ def main() -> None:
     with output_path.open("w", encoding="utf-8") as f:
         json.dump(json_report, f, ensure_ascii=False, indent=2)
     print(f"\n[run_eval] JSON report written to: {output_path}")
+
+    # Also write JSONL for downstream score_eval compatibility
+    jsonl_path = output_path.with_suffix(".jsonl")
+    with jsonl_path.open("w", encoding="utf-8") as f:
+        for cr in case_results:
+            f.write(json.dumps(cr, ensure_ascii=False) + "\n")
+    print(f"[run_eval] JSONL written to: {jsonl_path}")
 
     # Write Markdown report alongside
     md_path = output_path.with_suffix(".md")

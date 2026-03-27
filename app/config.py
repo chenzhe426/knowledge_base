@@ -33,8 +33,8 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
 # =========================
 # RAG 默认参数
 # =========================
-DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", 500))
-DEFAULT_CHUNK_OVERLAP = int(os.getenv("DEFAULT_CHUNK_OVERLAP", 100))
+DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", 600))
+DEFAULT_CHUNK_OVERLAP = int(os.getenv("DEFAULT_CHUNK_OVERLAP", 60))
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", 3))
 
 # =========================
@@ -48,7 +48,7 @@ HYBRID_KEYWORD_TOP_K = int(os.getenv("HYBRID_KEYWORD_TOP_K", 20))
 # DB lexical 召回取数
 HYBRID_LEXICAL_FETCH_K = int(os.getenv("HYBRID_LEXICAL_FETCH_K", 120))
 HYBRID_BOOLEAN_FETCH_K = int(os.getenv("HYBRID_BOOLEAN_FETCH_K", 80))
-HYBRID_HYDRATE_TOP_K = int(os.getenv("HYBRID_HYDRATE_TOP_K", 160))
+HYBRID_HYDRATE_TOP_K = int(os.getenv("HYBRID_HYDRATE_TOP_K", 400))
 
 # 最终重排权重
 RETRIEVAL_WEIGHT_EMBEDDING = float(
@@ -86,7 +86,7 @@ RETRIEVAL_DEDUP_SIM_THRESHOLD = float(
     os.getenv("RETRIEVAL_DEDUP_SIM_THRESHOLD", 0.82)
 )
 RETRIEVAL_MAX_SAME_SECTION = int(
-    os.getenv("RETRIEVAL_MAX_SAME_SECTION", 2)
+    os.getenv("RETRIEVAL_MAX_SAME_SECTION", 3)
 )
 
 # 邻接 chunk 扩展
@@ -150,6 +150,71 @@ QUERY_STOPWORDS = {
     "缺点",
     "优缺点",
 }
+
+# =========================
+# V3 Multi-stage Retrieval 配置
+# =========================
+RETRIEVAL_USE_MULTISTAGE = os.getenv("RETRIEVAL_USE_MULTISTAGE", "false").lower() in {"1", "true", "yes", "on"}
+RETRIEVAL_CANDIDATE_DOCS = int(os.getenv("RETRIEVAL_CANDIDATE_DOCS", "3"))
+RETRIEVAL_CANDIDATE_SECTIONS = int(os.getenv("RETRIEVAL_CANDIDATE_SECTIONS", "5"))
+RETRIEVAL_CHUNKS_PER_SECTION = int(os.getenv("RETRIEVAL_CHUNKS_PER_SECTION", "5"))
+RETRIEVAL_SECTION_PAGE_WINDOW = int(os.getenv("RETRIEVAL_SECTION_PAGE_WINDOW", "3"))
+RETRIEVAL_SECTION_EMBEDDING_TOP_K = int(os.getenv("RETRIEVAL_SECTION_EMBEDDING_TOP_K", "10"))
+RETRIEVAL_HYBRID_W_DENSE = float(os.getenv("RETRIEVAL_HYBRID_W_DENSE", "0.60"))
+RETRIEVAL_HYBRID_W_LEXICAL = float(os.getenv("RETRIEVAL_HYBRID_W_LEXICAL", "0.40"))
+RETRIEVAL_SECTION_RELEVANCE_BOOST = float(os.getenv("RETRIEVAL_SECTION_RELEVANCE_BOOST", "0.06"))
+RETRIEVAL_CONTEXTUAL_HEADER_ENABLED = os.getenv("RETRIEVAL_CONTEXTUAL_HEADER_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+
+# P0 rerank signal weights
+RETRIEVAL_NUMERIC_BOOST_WEIGHT = float(os.getenv("RETRIEVAL_NUMERIC_BOOST_WEIGHT", "0.08"))
+RETRIEVAL_TABLE_BOOST_WEIGHT = float(os.getenv("RETRIEVAL_TABLE_BOOST_WEIGHT", "0.06"))
+RETRIEVAL_QUERY_AWARE_BOOST_WEIGHT = float(os.getenv("RETRIEVAL_QUERY_AWARE_BOOST_WEIGHT", "0.07"))
+RETRIEVAL_ANTI_NOISE_PENALTY_WEIGHT = float(os.getenv("RETRIEVAL_ANTI_NOISE_PENALTY_WEIGHT", "0.04"))
+RETRIEVAL_PAGE_CLUSTER_ALPHA = float(os.getenv("RETRIEVAL_PAGE_CLUSTER_ALPHA", "0.15"))
+
+# Section/page clustering
+SECTION_PAGE_GAP_THRESHOLD = int(os.getenv("SECTION_PAGE_GAP_THRESHOLD", "3"))
+RETRIEVAL_MAX_CHUNKS_PER_PAGE = int(os.getenv("RETRIEVAL_MAX_CHUNKS_PER_PAGE", "2"))
+
+# Evidence semantic scoring
+RETRIEVAL_SEMANTIC_THRESHOLD = float(os.getenv("RETRIEVAL_SEMANTIC_THRESHOLD", "0.78"))
+RETRIEVAL_EVIDENCE_LEXICAL_THRESHOLD = float(os.getenv("RETRIEVAL_EVIDENCE_LEXICAL_THRESHOLD", "0.42"))
+
+# =============================================================================
+# V4 Pipeline Config — Engineering Defaults
+#
+# Default pipeline: query → multistage retrieval → LLM rerank → grounded answer → verifier
+#
+# Default behavior:
+#   - LLM rerank: ON (answerability-first)
+#   - Answer verifier: ON (diagnostic)
+#   - Self-refine: OFF (only enabled manually when needed)
+# =============================================================================
+
+# --- V4: LLM Reranker ---
+V4_ENABLE_LLM_RERANK = os.getenv("V4_ENABLE_LLM_RERANK", "true").lower() in {"1", "true", "yes", "on"}
+V4_LLM_RERANK_TOP_N = int(os.getenv("V4_LLM_RERANK_TOP_N", "8"))      # Cost control: default 8
+V4_LLM_RERANK_WEIGHT = float(os.getenv("V4_LLM_RERANK_WEIGHT", "0.40"))
+V4_LLM_RERANK_MODEL = os.getenv("V4_LLM_RERANK_MODEL", "")
+V4_LLM_RERANK_TEMPERATURE = float(os.getenv("V4_LLM_RERANK_TEMPERATURE", "0.0"))
+
+# --- V4: Answer Verifier ---
+V4_ENABLE_ANSWER_VERIFIER = os.getenv("V4_ENABLE_ANSWER_VERIFIER", "true").lower() in {"1", "true", "yes", "on"}
+V4_VERIFIER_MODEL = os.getenv("V4_VERIFIER_MODEL", "")
+V4_VERIFIER_TEMPERATURE = float(os.getenv("V4_VERIFIER_TEMPERATURE", "0.0"))
+V4_VERIFIER_THRESHOLD = float(os.getenv("V4_VERIFIER_THRESHOLD", "0.5"))
+V4_VERIFIER_LLM_WEIGHT = float(os.getenv("V4_VERIFIER_LLM_WEIGHT", "0.6"))
+
+# --- V4: Self-Refine (default OFF) ---
+V4_ENABLE_SELF_REFINE = os.getenv("V4_ENABLE_SELF_REFINE", "false").lower() in {"1", "true", "yes", "on"}
+V4_MAX_REFINE_ROUNDS = int(os.getenv("V4_MAX_REFINE_ROUNDS", "1"))
+V4_REFINE_MODEL = os.getenv("V4_REFINE_MODEL", "")
+V4_REFINE_TEMPERATURE = float(os.getenv("V4_REFINE_TEMPERATURE", "0.2"))
+V4_REFINE_TRIGGER_REQUIRES_VERIFIER_FAIL = os.getenv("V4_REFINE_TRIGGER_REQUIRES_VERIFIER_FAIL", "true").lower() in {"1", "true", "yes", "on"}
+
+# --- V4: Answer Generation ---
+V4_ANSWER_USE_STRUCTURED_OUTPUT = os.getenv("V4_ANSWER_USE_STRUCTURED_OUTPUT", "true").lower() in {"1", "true", "yes", "on"}
+V4_NUMERIC_FIRST_FOR_NUMERIC_QUERIES = os.getenv("V4_NUMERIC_FIRST_FOR_NUMERIC_QUERIES", "true").lower() in {"1", "true", "yes", "on"}
 
 # =========================
 # 其他

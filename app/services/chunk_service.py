@@ -2,6 +2,7 @@ import hashlib
 import inspect
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from app.services.vector_store import vector_store
 
@@ -78,43 +79,6 @@ def _maybe_delete_vector_index(document_id: int) -> None:
     except Exception:
         # 不阻塞主索引流程
         return
-
-def _maybe_upsert_vector_index(
-    *,
-    chunk_id: int | None,
-    document_id: int,
-    chunk_index: int,
-    embedding: list[float] | None,
-    chunk: dict[str, Any],
-) -> None:
-    if not chunk_id or not embedding:
-        return
-
-    payload = {
-        "chunk_id": int(chunk_id),
-        "document_id": document_id,
-        "chunk_index": chunk_index,
-        "doc_title": chunk.get("title", ""),
-        "section_title": chunk.get("section_title", ""),
-        "section_path": section_path_to_str(chunk.get("section_path")),
-        "page_start": chunk.get("page_start"),
-        "page_end": chunk.get("page_end"),
-        "chunk_type": chunk.get("chunk_type"),
-        "token_count": chunk.get("token_count", 0),
-        "chunk_hash": chunk.get("chunk_hash"),
-        "search_text": chunk.get("search_text", ""),
-        "chunk_text": chunk.get("chunk_text", ""),
-        "metadata": chunk.get("metadata") or {},
-        "embedding": embedding,
-    }
-
-    try:
-        from app.services.vector_store import vector_store
-        vector_store.upsert_chunks([payload])
-    except Exception:
-        # 不阻塞主索引流程
-        return
-
 
 def _estimate_token_count(text: str) -> int:
     text = text or ""
@@ -815,57 +779,105 @@ def index_document(
         overlap=overlap,
     )
 
-    saved_chunks: list[dict[str, Any]] = []
-
+    # 1. 预处理：收集所有有效 search_text
+    valid_chunks: list[tuple[int, dict[str, Any]]] = []
     for idx, chunk in enumerate(chunks):
         search_text = normalize_whitespace(chunk.get("search_text", ""))
-        chunk_text = normalize_whitespace(chunk.get("chunk_text", ""))
-        lexical_text = normalize_whitespace(chunk.get("lexical_text", ""))
-
         if not search_text:
             continue
+        valid_chunks.append((idx, chunk))
 
+    # 2. 收集所有 search_text，为批量 embedding 准备
+    search_texts = [normalize_whitespace(c[1].get("search_text", "")) for c in valid_chunks]
+
+    # 3. 嵌入与插入流水线：后台线程计算 embedding，主线程写入 DB
+    #    避免顺序等待，最大化重叠 embedding（I/O）与 DB 写入（I/O）
+    vector_payloads: list[dict[str, Any]] = []
+    saved_chunks: list[dict[str, Any]] = []
+
+    def embed_worker(idx: int, chunk: dict[str, Any], search_text: str) -> tuple[int, dict[str, Any], list[float] | None]:
         embedding = get_embedding(search_text)
-        metadata = {
-            "title": chunk.get("title"),
-            "section_title": chunk.get("section_title"),
-            **(chunk.get("metadata") or {}),
+        return idx, chunk, embedding
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {
+            executor.submit(embed_worker, idx, chunk, st): idx
+            for (idx, chunk), st in zip(valid_chunks, search_texts)
         }
 
-        payload = {
-            "document_id": document_id,
-            "chunk_text": chunk_text,
-            "search_text": search_text,
-            "lexical_text": lexical_text,
-            "embedding": embedding,
-            "chunk_index": idx,
-            "section_path": chunk.get("section_path") or [],
-            "page_start": chunk.get("page_start"),
-            "page_end": chunk.get("page_end"),
-            "block_start_index": chunk.get("block_start_index"),
-            "block_end_index": chunk.get("block_end_index"),
-            "chunk_type": chunk.get("chunk_type"),
-            "title": chunk.get("title"),
-            "section_title": chunk.get("section_title"),
-            "token_count": chunk.get("token_count", 0),
-            "chunk_hash": chunk.get("chunk_hash"),
-            "metadata_json": metadata,
-        }
+        # 按完成顺序处理（先完成的先写 DB）
+        completed = 0
+        for future in as_completed(futures):
+            try:
+                idx, chunk, embedding = future.result()
+            except Exception:
+                continue
 
-        inserted = _call_insert_chunk(payload)
-        chunk_id = inserted if isinstance(inserted, int) else (
-            inserted.get("id") if isinstance(inserted, dict) else None
-        )
+            if not embedding:
+                continue
 
-        _maybe_upsert_vector_index(
-            chunk_id=chunk_id,
-            document_id=document_id,
-            chunk_index=idx,
-            embedding=embedding,
-            chunk=chunk,
-        )
+            chunk_text = normalize_whitespace(chunk.get("chunk_text", ""))
+            lexical_text = normalize_whitespace(chunk.get("lexical_text", ""))
 
-        saved_chunks.append(_to_indexed_chunk_item(chunk_id=chunk_id, chunk_index=idx, chunk=chunk))
+            metadata = {
+                "title": chunk.get("title"),
+                "section_title": chunk.get("section_title"),
+                **(chunk.get("metadata") or {}),
+            }
+
+            payload = {
+                "document_id": document_id,
+                "chunk_text": chunk_text,
+                "search_text": chunk.get("search_text", ""),
+                "lexical_text": lexical_text,
+                "embedding": embedding,
+                "chunk_index": idx,
+                "section_path": chunk.get("section_path") or [],
+                "page_start": chunk.get("page_start"),
+                "page_end": chunk.get("page_end"),
+                "block_start_index": chunk.get("block_start_index"),
+                "block_end_index": chunk.get("block_end_index"),
+                "chunk_type": chunk.get("chunk_type"),
+                "title": chunk.get("title"),
+                "section_title": chunk.get("section_title"),
+                "token_count": chunk.get("token_count", 0),
+                "chunk_hash": chunk.get("chunk_hash"),
+                "metadata_json": metadata,
+            }
+
+            inserted = _call_insert_chunk(payload)
+            chunk_id = inserted if isinstance(inserted, int) else (
+                inserted.get("id") if isinstance(inserted, dict) else None
+            )
+
+            if chunk_id is not None:
+                vector_payloads.append({
+                    "chunk_id": chunk_id,
+                    "document_id": document_id,
+                    "chunk_index": idx,
+                    "doc_title": chunk.get("title", ""),
+                    "section_title": chunk.get("section_title", ""),
+                    "section_path": section_path_to_str(chunk.get("section_path")),
+                    "page_start": chunk.get("page_start"),
+                    "page_end": chunk.get("page_end"),
+                    "chunk_type": chunk.get("chunk_type"),
+                    "token_count": chunk.get("token_count", 0),
+                    "chunk_hash": chunk.get("chunk_hash"),
+                    "search_text": chunk.get("search_text", ""),
+                    "chunk_text": chunk_text,
+                    "metadata": metadata,
+                    "embedding": embedding,
+                })
+
+            saved_chunks.append(_to_indexed_chunk_item(chunk_id=chunk_id, chunk_index=idx, chunk=chunk))
+            completed += 1
+
+    # 4. 批量 upsert 向量（一次调用）
+    if vector_payloads:
+        try:
+            vector_store.upsert_chunks(vector_payloads)
+        except Exception:
+            pass
 
     return {
         "document_id": document_id,

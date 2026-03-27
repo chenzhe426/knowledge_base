@@ -42,7 +42,13 @@ class EvalAdapter:
         "internal" – call Python functions directly (default, no HTTP dependency).
         "api"      – call FastAPI endpoints over HTTP.
     top_k : int
-        Number of chunks to retrieve per query.
+        Number of chunks to return AND to pass to LLM context.
+    retrieve_top_k : int, optional
+        If > top_k, retrieves this many candidates first, then reranks and returns top_k.
+        Enables two-stage retrieval.
+    enable_query_enhance : bool
+        If True, applies lightweight financial query enhancement before retrieval.
+        The original question is still used for answer generation.
     api_base_url : str
         FastAPI base URL (only used when mode == "api").
     session_id : str, optional
@@ -53,6 +59,9 @@ class EvalAdapter:
         self,
         mode: str = "internal",
         top_k: int = 5,
+        retrieve_top_k: int | None = None,
+        enable_query_enhance: bool = False,
+        use_multistage: bool = False,
         api_base_url: str = "http://127.0.0.1:8000",
         session_id: Optional[str] = None,
     ) -> None:
@@ -60,6 +69,9 @@ class EvalAdapter:
             raise ValueError(f"mode must be 'internal' or 'api', got: {mode!r}")
         self.mode = mode
         self.top_k = top_k
+        self.retrieve_top_k = retrieve_top_k
+        self.enable_query_enhance = enable_query_enhance
+        self.use_multistage = use_multistage
         self.api_base_url = api_base_url.rstrip("/")
         self.session_id = session_id
 
@@ -147,6 +159,9 @@ class EvalAdapter:
             response_mode="text",
             session_id=self.session_id,
             use_chat_context=bool(history),
+            retrieve_top_k=self.retrieve_top_k,
+            enable_query_enhance=self.enable_query_enhance,
+            use_multistage=self.use_multistage,
         )
 
     # ------------------------------------------------------------------
@@ -222,11 +237,26 @@ class EvalAdapter:
             "chunk_id": self._to_int(item.get("chunk_id")),
             "document_id": self._to_int(item.get("document_id")),
             "score": float(item.get("score") or 0.0),
+            "rerank_score": float(item.get("rerank_score") or item.get("score") or 0.0),
+            "embedding_score": float(item.get("embedding_score") or 0.0),
+            "keyword_score": float(item.get("keyword_score") or 0.0),
+            "bm25_score": float(item.get("bm25_score") or 0.0),
             "title": str(item.get("title") or ""),
             "section_title": str(item.get("section_title") or ""),
             "section_path": str(item.get("section_path") or ""),
             "chunk_text": str(item.get("chunk_text") or item.get("quote") or ""),
             "search_text": str(item.get("search_text") or ""),
+            "page_start": self._to_int(item.get("page_start")),
+            "page_end": self._to_int(item.get("page_end")),
+            "term_hits": item.get("term_hits") or {},
+            "_retrieval_query": item.get("_retrieval_query"),
+            # New P0 rerank signal breakdowns
+            "_numeric_boost": float(item.get("_numeric_boost") or 0.0),
+            "_table_boost": float(item.get("_table_boost") or 0.0),
+            "_query_aware_boost": float(item.get("_query_aware_boost") or 0.0),
+            "_anti_noise_penalty": float(item.get("_anti_noise_penalty") or 0.0),
+            "_page_cluster_bonus": float(item.get("_page_cluster_bonus") or 0.0),
+            "_query_intent": str(item.get("_query_intent") or "unknown"),
         }
 
     def _extract_answer(self, result: Any) -> str:

@@ -1,0 +1,145 @@
+{
+  "total_samples": 15,
+  "failure_counts": {
+    "page_near_miss": 15
+  },
+  "failure_details": {
+    "page_near_miss": [
+      {
+        "id": "financebench_id_00222",
+        "question": "Does AMD have a reasonably healthy liquidity profile based on its quick ratio fo",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 1,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 1
+      },
+      {
+        "id": "financebench_id_00995",
+        "question": "What are the major products and services that AMD sells as of FY22?",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 0,
+        "evidence_semantic_hit_at_5": 1,
+        "numeric_match": 1
+      },
+      {
+        "id": "financebench_id_01198",
+        "question": "What drove revenue change as of the FY22 for AMD?",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 1,
+        "evidence_semantic_hit_at_5": 1,
+        "numeric_match": 1
+      },
+      {
+        "id": "financebench_id_00917",
+        "question": "What drove operating margin change as of the FY22 for AMD? If operating margin i",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 1,
+        "evidence_semantic_hit_at_5": 1,
+        "numeric_match": 0
+      },
+      {
+        "id": "financebench_id_01279",
+        "question": "Among operations, investing, and financing activities, which brought in the most",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 1,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 0
+      },
+      {
+        "id": "financebench_id_00476",
+        "question": "Which debt securities are registered to trade on a national securities exchange ",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": null,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 0
+      },
+      {
+        "id": "financebench_id_01028",
+        "question": "What are the geographies that American Express primarily operates in as of 2022?",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 1,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 1
+      },
+      {
+        "id": "financebench_id_00723",
+        "question": "Does AMEX have an improving operating margin profile as of 2022? If operating ma",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 0,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 0
+      },
+      {
+        "id": "financebench_id_00720",
+        "question": "What drove gross margin change as of the FY2022 for American Express? If gross m",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 1,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 0
+      },
+      {
+        "id": "financebench_id_01351",
+        "question": "How much has the effective tax rate of American Express changed between FY2021 a",
+        "answer_label": "wrong",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 0,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 1
+      },
+      {
+        "id": "financebench_id_00517",
+        "question": "Are there any product categories / service categories that represent more than 2",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 0,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 1
+      },
+      {
+        "id": "financebench_id_01091",
+        "question": "Has Boeing reported any materially important ongoing legal battles from FY2022?",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 0,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 0
+      },
+      {
+        "id": "financebench_id_00678",
+        "question": "Does Boeing have an improving gross margin profile as of FY2022? If gross margin",
+        "answer_label": "wrong",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 1,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 1
+      },
+      {
+        "id": "financebench_id_01290",
+        "question": "Who are the primary customers of Boeing as of FY2022?",
+        "answer_label": "wrong",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 0,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 1
+      },
+      {
+        "id": "financebench_id_00464",
+        "question": "Is Boeing's business subject to cyclicality?",
+        "answer_label": "partial",
+        "doc_hit_at_5": 1,
+        "page_relaxed_hit_at_5": 1,
+        "evidence_semantic_hit_at_5": 0,
+        "numeric_match": 1
+      }
+    ]
+  }
+}

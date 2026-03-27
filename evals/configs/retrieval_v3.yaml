@@ -1,0 +1,21 @@
+# Retrieval v3: Multi-stage retrieval (doc → section → chunk)
+#
+# Architecture:
+#   1. Query rewrite + intent classify
+#   2. Doc retrieval (light) - top 3 docs
+#   3. Section retrieval (key) - group chunks by page proximity, score sections
+#   4. Chunk retrieval within sections
+#   5. Multi-signal rerank with section relevance
+#   6. Page clustering
+#
+mode: internal
+top_k: 5
+retrieve_top_k: 20
+enable_query_enhance: true
+use_multistage: true
+normalize_text: true
+use_doc_level_fallback: true
+
+api:
+  base_url: "http://127.0.0.1:8000"
+  timeout: 60
