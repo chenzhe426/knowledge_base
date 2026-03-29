@@ -164,6 +164,15 @@ def _detect_financial_query(query_info: dict[str, Any]) -> bool:
         "10-k", "annual report", "financial statement", "balance sheet",
         "income statement", "cash flow", "revenue", "net income", "eps",
         "shares outstanding", "liabilities", "assets",
+        # Financial ratios and metrics
+        "quick ratio", "current ratio", "liquidity", "solvency",
+        "margin", "gross margin", "operating margin", "net margin", "profit margin",
+        "ebitda", "ebit", "interest coverage",
+        "working capital", "free cash flow", "operating cash flow",
+        "debt-to-equity", "debt ratio", "leverage",
+        "return on equity", "roe", "return on assets", "roa",
+        "earnings per share", "dividend yield",
+        "ratio", "ratios", "metric", "metrics",
     ]
 
     text_lower = norm.lower()
@@ -181,18 +190,90 @@ def _query_has_financial_terms(query_info: dict[str, Any]) -> bool:
     return _detect_financial_query(query_info)
 
 
+# Mapping from financial indicators to their underlying component terms.
+# When a query contains these indicators, we expand to include the component terms
+# so that lexical search can match against balance sheet / income statement data.
+_FINANCIAL_INDICATOR_EXPANSION_MAP: dict[str, list[str]] = {
+    "quick ratio": [
+        "current assets", "cash equivalents", "short-term investments",
+        "accounts receivable", "receivables", "current liabilities",
+        "balance sheet", "liquidity",
+    ],
+    "current ratio": [
+        "current assets", "current liabilities", "balance sheet",
+    ],
+    "liquidity": [
+        "current assets", "cash", "cash equivalents", "short-term investments",
+        "accounts receivable", "current liabilities", "balance sheet",
+    ],
+    "balance sheet": [
+        "current assets", "non-current assets", "current liabilities",
+        "total assets", "total liabilities", "shareholders equity",
+    ],
+    "income statement": [
+        "revenue", "net income", "gross margin", "operating income",
+        "earnings", "eps", "expenses", "cost of sales",
+    ],
+    "cash flow": [
+        "operating activities", "investing activities", "financing activities",
+        "cash", "capital expenditures", "free cash flow",
+    ],
+    "operating margin": [
+        "operating income", "revenue", "gross margin", "operating expenses",
+    ],
+    "net margin": [
+        "net income", "revenue", "net profit", "earnings",
+    ],
+    "gross margin": [
+        "gross profit", "revenue", "cost of sales", "gross",
+    ],
+    "tax rate": [
+        "income tax", "provision for income taxes", "effective tax rate",
+        "pretax income", "tax",
+    ],
+    "debt": [
+        "long-term debt", "short-term debt", "notes payable", "bonds",
+        "liabilities", "interest expense",
+    ],
+    "working capital": [
+        "current assets", "current liabilities", "cash", "receivables", "inventories",
+    ],
+}
+
+
+def _expand_financial_indicators(query_lower: str) -> list[str]:
+    """Expand query by adding financial indicator component terms."""
+    extra_terms: list[str] = []
+    for indicator, components in _FINANCIAL_INDICATOR_EXPANSION_MAP.items():
+        if indicator in query_lower:
+            for term in components:
+                if term not in query_lower:
+                    extra_terms.append(term)
+    return extra_terms
+
+
 def _build_expanded_query(query_info: dict[str, Any]) -> str:
     """
     Build an expanded query by appending financial context terms
     when the query is detected as financial.
+
+    For specific financial indicators (e.g., "quick ratio"), also expand
+    to include underlying balance-sheet components so lexical search can
+    match against raw financial data chunks.
     """
     if not _detect_financial_query(query_info):
         return query_info.get("normalized_query", "")
 
     expansions = ["financial statements", "annual report", "10-K", "fiscal"]
     query = query_info.get("normalized_query", "")
+    query_lower = query.lower()
+
+    # Add component terms for specific financial indicators
+    indicator_terms = _expand_financial_indicators(query_lower)
+    expansions.extend(indicator_terms)
+
     for exp in expansions:
-        if exp.lower() not in query.lower():
+        if exp.lower() not in query_lower:
             query = f"{query} {exp}"
     return query
 

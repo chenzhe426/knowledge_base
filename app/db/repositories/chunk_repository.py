@@ -635,3 +635,19 @@ def clear_all_chunks() -> int:
     with get_cursor(commit=True) as (_, cursor):
         cursor.execute("DELETE FROM document_chunks")
         return int(cursor.rowcount)
+
+
+def delete_chunks_by_ids(chunk_ids: list[int]) -> int:
+    """Delete specific chunks by their IDs."""
+    if not chunk_ids:
+        return 0
+    int_ids = [int(cid) for cid in chunk_ids if cid]
+    if not int_ids:
+        return 0
+    placeholders = ", ".join(["%s"] * len(int_ids))
+    with get_cursor(commit=True) as (_, cursor):
+        cursor.execute(
+            f"DELETE FROM document_chunks WHERE id IN ({placeholders})",
+            int_ids,
+        )
+        return int(cursor.rowcount)

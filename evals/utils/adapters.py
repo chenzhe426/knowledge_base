@@ -64,6 +64,7 @@ class EvalAdapter:
         use_multistage: bool = False,
         api_base_url: str = "http://127.0.0.1:8000",
         session_id: Optional[str] = None,
+        llm_timeout: int | None = None,
     ) -> None:
         if mode not in {"internal", "api"}:
             raise ValueError(f"mode must be 'internal' or 'api', got: {mode!r}")
@@ -74,6 +75,7 @@ class EvalAdapter:
         self.use_multistage = use_multistage
         self.api_base_url = api_base_url.rstrip("/")
         self.session_id = session_id
+        self.llm_timeout = llm_timeout
 
     # ------------------------------------------------------------------
     # Public interface
@@ -123,16 +125,27 @@ class EvalAdapter:
           - latency_ms        : float
         """
         start = time.perf_counter()
+        print(f"[DEBUG EvalAdapter.answer] Starting answer for query: {query[:80]}...")
+
+        # Detect company name from query and resolve to doc_id for filtering
+        doc_filter = self._detect_company_doc_id(query)
 
         if self.mode == "internal":
-            result = self._answer_internal(query, conversation_history)
+            result = self._answer_internal(query, conversation_history, doc_filter=doc_filter)
         else:
             result = self._answer_api(query, conversation_history)
 
         latency_ms = (time.perf_counter() - start) * 1000
+        print(f"[DEBUG EvalAdapter.answer] Got result after {latency_ms:.0f}ms")
 
         answer_text = self._extract_answer(result)
         chunks = self._extract_chunks(result)
+
+        # Extract stage timings if present
+        stage_timings = {}
+        if isinstance(result, dict):
+            stage_timings = result.get("stage_timings", {})
+            total_pipeline_ms = result.get("total_pipeline_ms")
 
         return {
             "query": query,
@@ -140,6 +153,8 @@ class EvalAdapter:
             "final_answer": answer_text,
             "raw_response": result,
             "latency_ms": latency_ms,
+            "stage_timings": stage_timings,
+            "total_pipeline_ms": total_pipeline_ms,
         }
 
     # ------------------------------------------------------------------
@@ -151,9 +166,10 @@ class EvalAdapter:
         from app.retrieval.service import retrieve_chunks
         return retrieve_chunks(query, top_k=top_k)
 
-    def _answer_internal(self, query: str, history: Optional[list[dict]]) -> dict[str, Any]:
+    def _answer_internal(self, query: str, history: Optional[list[dict]], doc_filter: int | None = None) -> dict[str, Any]:
         from app.qa.pipeline import answer_question
-        return answer_question(
+        print(f"[DEBUG EvalAdapter] _answer_internal called with query: {query[:80]}...")
+        result = answer_question(
             question=query,
             top_k=self.top_k,
             response_mode="text",
@@ -162,7 +178,47 @@ class EvalAdapter:
             retrieve_top_k=self.retrieve_top_k,
             enable_query_enhance=self.enable_query_enhance,
             use_multistage=self.use_multistage,
+            llm_timeout=self.llm_timeout,
+            doc_filter=doc_filter,
         )
+        print(f"[DEBUG EvalAdapter] answer_question returned, result keys: {list(result.keys()) if isinstance(result, dict) else type(result)}")
+        return result
+
+    # ------------------------------------------------------------------
+    # Company detection for doc filtering
+    # ------------------------------------------------------------------
+
+    _COMPANY_KEYWORDS = {
+        "AMD": "AMD_2022_10K",
+        "BOEING": "BOEING_2022_10K",
+        "AMERICAN EXPRESS": "AMERICANEXPRESS_2022_10K",
+        "AMEX": "AMERICANEXPRESS_2022_10K",
+    }
+
+    _doc_id_cache: dict[str, int] = {}
+
+    def _detect_company_doc_id(self, query: str) -> int | None:
+        """
+        Detect company name from query and return the corresponding doc_id.
+        Returns None if no company detected or not found.
+        """
+        query_upper = query.upper()
+
+        for keyword, doc_title in self._COMPANY_KEYWORDS.items():
+            if keyword in query_upper:
+                # Lazy-load doc_id mapping
+                if not self._doc_id_cache:
+                    from app.db.bootstrap import init_db
+                    from app.db import get_all_documents
+                    init_db()
+                    for d in get_all_documents():
+                        self._doc_id_cache[d["title"]] = d["id"]
+
+                doc_id = self._doc_id_cache.get(doc_title)
+                if doc_id is not None:
+                    print(f"[DEBUG] Detected company '{keyword}' -> doc_id={doc_id}")
+                    return doc_id
+        return None
 
     # ------------------------------------------------------------------
     # API mode implementations

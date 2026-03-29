@@ -3,6 +3,7 @@ Main QA pipeline: answer_question entry point with V4 verifier + refine.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.db import (
@@ -71,7 +72,7 @@ def rewrite_query_with_history(history: list[dict[str, Any]], question: str) -> 
     )
 
     try:
-        rewritten = chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
+        rewritten = chat_completion(system_prompt=system_prompt, user_prompt=user_prompt, timeout=llm_timeout)
         rewritten = normalize_whitespace(rewritten)
         return rewritten or question
     except Exception:
@@ -88,6 +89,8 @@ def answer_question(
     retrieve_top_k: int | None = None,
     enable_query_enhance: bool = False,
     use_multistage: bool = False,
+    llm_timeout: int | None = None,
+    doc_filter: int | None = None,
 ) -> dict[str, Any]:
     """
     Full RAG pipeline: question → rewrite → retrieve → build context → generate answer.
@@ -116,41 +119,68 @@ def answer_question(
             metadata={},
         )
 
+    stage_timings: dict[str, float] = {}
+    t_pipeline_start = time.perf_counter()
+
     history = get_chat_messages(session_id, limit=CHAT_HISTORY_LIMIT) if use_chat_context else []
+
+    t_rewrite_start = time.perf_counter()
     rewritten_query = rewrite_query_with_history(history, question) if use_chat_context else question
+    stage_timings["query_rewrite"] = round((time.perf_counter() - t_rewrite_start) * 1000, 2)
 
     effective_retrieve_top_k = retrieve_top_k if retrieve_top_k is not None else top_k
 
     enhanced_query = None
+    t_query_enhance_start = time.perf_counter()
     if enable_query_enhance:
         enhanced_query = enhance_financial_query(rewritten_query)
+    stage_timings["query_enhance"] = round((time.perf_counter() - t_query_enhance_start) * 1000, 2)
 
-    raw_retrieved_chunks = retrieve_chunks(
+    t_retrieve_start = time.perf_counter()
+    retrieval_result = retrieve_chunks(
         rewritten_query,
         top_k=effective_retrieve_top_k,
         enhanced_query=enhanced_query,
         use_multistage=use_multistage,
+        doc_filter=doc_filter,
     )
+    stage_timings["retrieval"] = round((time.perf_counter() - t_retrieve_start) * 1000, 2)
+
+    # Handle both dict (with timing) and list (legacy) return formats
+    if isinstance(retrieval_result, dict):
+        raw_retrieved_chunks = retrieval_result.get("chunks", retrieval_result.get("retrieved_chunks", []))
+        retrieval_latency = retrieval_result.get("latency_ms", 0.0)
+        retrieval_stage_timings = retrieval_result.get("stage_timings", {})
+        stage_timings["retrieval"] = retrieval_latency
+        for k, v in retrieval_stage_timings.items():
+            stage_timings[f"retrieval_{k}"] = v
+    else:
+        raw_retrieved_chunks = retrieval_result
+
     retrieved_chunks = [_normalize_retrieved_chunk(chunk) for chunk in raw_retrieved_chunks]
+
+    t_intent_start = time.perf_counter()
+    intent = "unknown"
+    try:
+        intent = classify_query_intent(question)
+    except Exception:
+        pass
+    stage_timings["intent_classify"] = round((time.perf_counter() - t_intent_start) * 1000, 2)
 
     context = assemble_context(raw_retrieved_chunks, max_chunks=QA_MAX_CONTEXT_CHUNKS)
     history_text = _format_history_for_prompt(history, limit=CHAT_HISTORY_LIMIT) if use_chat_context else ""
 
     structured = None
     answer_text = ""
-    intent = "unknown"
-    try:
-        intent = classify_query_intent(question)
-    except Exception:
-        pass
 
+    t_answer_start = time.perf_counter()
     if response_mode == "structured" and QA_STRUCTURED_ENABLE:
         system_prompt, user_prompt = _build_structured_answer_prompt(
             question=question,
             context=context,
             history_text=history_text,
         )
-        raw_output = chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
+        raw_output = chat_completion(system_prompt=system_prompt, user_prompt=user_prompt, timeout=llm_timeout)
         parsed = _safe_parse_structured_answer(raw_output)
 
         answer_text = parsed.get("answer", "") or ""
@@ -171,14 +201,17 @@ def answer_question(
             history_text=history_text,
         )
         answer_text = normalize_whitespace(
-            chat_completion(system_prompt=system_prompt, user_prompt=user_prompt)
+            chat_completion(system_prompt=system_prompt, user_prompt=user_prompt, timeout=llm_timeout)
         )
+    stage_timings["answer_generate"] = round((time.perf_counter() - t_answer_start) * 1000, 2)
 
+    t_cite_start = time.perf_counter()
     cited_evidence_ids: list[str] = []
     if answer_text and raw_retrieved_chunks:
         cited_evidence_ids = _extract_cited_evidence_ids(answer_text, raw_retrieved_chunks)
         if cited_evidence_ids and V4_ANSWER_USE_STRUCTURED_OUTPUT:
             answer_text = _augment_answer_with_citations(answer_text, cited_evidence_ids)
+    stage_timings["cite_extract"] = round((time.perf_counter() - t_cite_start) * 1000, 2)
 
     highlight_terms = _extract_query_terms(question, rewritten_query, raw_retrieved_chunks)
     sources = _build_sources(
@@ -287,6 +320,8 @@ def answer_question(
 
     _maybe_update_session_summary(session_id)
 
+    total_pipeline_ms = (time.perf_counter() - t_pipeline_start) * 1000
+
     return {
         "question": question,
         "rewritten_query": rewritten_query,
@@ -300,4 +335,6 @@ def answer_question(
         "query_intent": intent,
         "verification_result": verification_result,
         "refine_result": refine_result,
+        "stage_timings": stage_timings,
+        "total_pipeline_ms": round(total_pipeline_ms, 2),
     }

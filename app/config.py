@@ -38,6 +38,25 @@ DEFAULT_CHUNK_OVERLAP = int(os.getenv("DEFAULT_CHUNK_OVERLAP", 60))
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", 3))
 
 # =========================
+# Ingestion / Indexing
+# =========================
+INGEST_AUTO_INDEX = os.getenv("INGEST_AUTO_INDEX", "false").lower() in {"1", "true", "yes", "on"}
+INGEST_WORKERS = int(os.getenv("INGEST_WORKERS", 0))  # 0 = auto (min(cpu_count, file_count, 8))
+
+# 增量索引：开启后 index_document 会 diff chunk_hash，不全量删除重建
+INDEX_INCREMENTAL_ENABLED = os.getenv("INDEX_INCREMENTAL_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+
+# Embedding 批量参数
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", 32))
+EMBEDDING_MAX_RETRIES = int(os.getenv("EMBEDDING_MAX_RETRIES", "3"))
+EMBEDDING_CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", "4096"))
+
+# Finance-aware chunking
+DEFAULT_TEXT_CHUNK_SIZE = int(os.getenv("DEFAULT_TEXT_CHUNK_SIZE", 1200))
+DEFAULT_TEXT_CHUNK_OVERLAP = int(os.getenv("DEFAULT_TEXT_CHUNK_OVERLAP", 150))
+DEFAULT_TABLE_ROW_GROUP_SIZE = int(os.getenv("DEFAULT_TABLE_ROW_GROUP_SIZE", 20))
+
+# =========================
 # Hybrid Retrieval / 检索参数
 # =========================
 

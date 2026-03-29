@@ -6,15 +6,17 @@ Public API
 parse_document(file_path, config=None)
     → ParsedDocument
 
-parse_documents_from_folder(folder_path, config=None)
+parse_documents_from_folder(folder_path, config=None, max_workers=None)
     → list[ParsedDocument]
 """
 from __future__ import annotations
 
 import logging
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+import app.config as config
 from app.ingestion.config import ParsingConfig
 from app.ingestion.detectors import detect_file_type
 from app.ingestion.parsers.docx_parser import DocxParser
@@ -23,6 +25,8 @@ from app.ingestion.parsers.text_parser import TextParser
 from app.ingestion.schemas import ParsedDocument
 
 logger = logging.getLogger(__name__)
+
+_INGEST_WORKERS = int(config.INGEST_WORKERS) if hasattr(config, "INGEST_WORKERS") else 0
 
 # ---------------------------------------------------------------------------
 # Parser registry
@@ -94,6 +98,7 @@ def parse_documents_from_folder(
     folder_path: str | Path,
     config: ParsingConfig | None = None,
     recursive: bool = True,
+    max_workers: int | None = None,
 ) -> list[ParsedDocument]:
     """
     Recursively parse all supported documents in a folder.
@@ -104,6 +109,8 @@ def parse_documents_from_folder(
     config      : ParsingConfig | None
     recursive   : bool
         If True (default), descend into subdirectories.
+    max_workers : int | None
+        Override default worker count (default: auto = min(cpu_count, file_count, 8)).
 
     Returns
     -------
@@ -122,7 +129,14 @@ def parse_documents_from_folder(
     if not file_paths:
         return results
 
-    workers = min(2, len(file_paths))  # Use multiprocessing (not threading) for true parallelism
+    if max_workers is None or max_workers <= 0:
+        cpu_count = multiprocessing.cpu_count()
+        if _INGEST_WORKERS > 0:
+            workers = min(_INGEST_WORKERS, len(file_paths))
+        else:
+            workers = min(cpu_count, len(file_paths), 8)
+    else:
+        workers = min(max_workers, len(file_paths))
 
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {

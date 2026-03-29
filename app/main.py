@@ -95,6 +95,60 @@ def cmd_index(args):
     print_json(result)
 
 
+def _index_one_worker(doc_id: int, chunk_size: int, overlap: int) -> dict:
+    """Module-level worker for ProcessPoolExecutor (must be picklable)."""
+    import time
+    t0 = time.time()
+    try:
+        result = index_document(
+            document_id=doc_id,
+            chunk_size=chunk_size,
+            overlap=overlap,
+        )
+        return {"doc_id": doc_id, "status": "ok", "time": time.time() - t0, "result": result}
+    except Exception as e:
+        return {"doc_id": doc_id, "status": "error", "time": time.time() - t0, "error": str(e)}
+
+
+def cmd_index_all(args):
+    """Index all documents in parallel using ProcessPoolExecutor."""
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    import time
+
+    docs = get_all_documents()
+    if not docs:
+        print("No documents to index.")
+        return
+
+    doc_ids = [d["id"] for d in docs if d.get("id")]
+    workers = min(args.workers, len(doc_ids))
+    print(f"Indexing {len(doc_ids)} documents with {workers} parallel workers...")
+
+    t0 = time.time()
+    results = []
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_index_one_worker, doc_id, args.chunk_size, args.overlap): doc_id
+            for doc_id in doc_ids
+        }
+        for future in as_completed(futures):
+            r = future.result()
+            results.append(r)
+            status = r["status"]
+            dt = r["time"]
+            if status == "ok":
+                print(f"  doc_id={r['doc_id']}: ok ({dt:.1f}s, chunks={r['result'].get('chunk_count', 0)})")
+            else:
+                print(f"  doc_id={r['doc_id']}: ERROR ({dt:.1f}s) - {r.get('error', '?')}")
+
+    total_time = time.time() - t0
+    ok = sum(1 for r in results if r["status"] == "ok")
+    errors = len(results) - ok
+    print(f"\nDone: {ok}/{len(doc_ids)} indexed in {total_time:.1f}s total")
+    if errors:
+        print(f"Errors: {errors}")
+
+
 def cmd_chunks(args):
     rows = get_document_chunks(args.doc_id)
     simplified = []
@@ -189,6 +243,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="chunk overlap",
     )
     p_index.set_defaults(func=cmd_index)
+
+    p_index_all = subparsers.add_parser("index-all", help="并行建立所有文档的索引")
+    p_index_all.add_argument(
+        "--chunk-size",
+        type=int,
+        default=700,
+        help="chunk 大小",
+    )
+    p_index_all.add_argument(
+        "--overlap",
+        type=int,
+        default=120,
+        help="chunk overlap",
+    )
+    p_index_all.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="并行 worker 数量",
+    )
+    p_index_all.set_defaults(func=cmd_index_all)
 
     p_chunks = subparsers.add_parser("chunks", help="查看指定文档的 chunks")
     p_chunks.add_argument("--doc-id", type=int, required=True, help="文档 ID")

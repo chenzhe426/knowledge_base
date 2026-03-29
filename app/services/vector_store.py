@@ -337,6 +337,9 @@ class QdrantVectorStore(BaseVectorStore):
 
         return results
 
+    # Qdrant payload size limit is 32MB; use smaller batches for safety
+    _UPSERT_BATCH_SIZE = 200
+
     def upsert_chunks(self, chunks: list[dict[str, Any]]) -> None:
         if not self.client or not chunks:
             return
@@ -389,10 +392,13 @@ class QdrantVectorStore(BaseVectorStore):
         if not points:
             return
 
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=points,
-        )
+        # Batch upsert to avoid payload size limit (32MB)
+        for i in range(0, len(points), self._UPSERT_BATCH_SIZE):
+            batch = points[i : i + self._UPSERT_BATCH_SIZE]
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=batch,
+            )
 
     def delete_document_chunks(self, document_id: int) -> None:
         if not self.client:
@@ -410,6 +416,23 @@ class QdrantVectorStore(BaseVectorStore):
                     )
                 ]
             ),
+        )
+
+    def delete_chunk_vectors(self, chunk_ids: list[int]) -> None:
+        """Delete specific chunk vectors by their IDs."""
+        if not self.client or not chunk_ids:
+            return
+
+        self.ensure_collection()
+
+        int_ids = [int(cid) for cid in chunk_ids if cid]
+        if not int_ids:
+            return
+
+        from qdrant_client.models import PointIdsList
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=PointIdsList(points=int_ids),
         )
 
     @staticmethod

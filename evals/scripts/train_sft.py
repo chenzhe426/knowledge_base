@@ -115,6 +115,7 @@ class HuggingFaceConfig:
     save_steps: int = 100
     bf16: bool = True
     max_seq_length: int = 2048
+    val_size: float = 0.0
     lora_rank: int = 8
     lora_alpha: int = 16
     num_gpus: int = 1

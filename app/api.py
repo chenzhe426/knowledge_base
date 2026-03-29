@@ -29,13 +29,14 @@ from app.models import (
 
 
 from app.services import (
-    answer_question,
-    get_chat_history,
     import_documents,
     import_single_document,
     index_document,
-    summarize_document,
+    ingest_document,
+    ingest_folder,
 )
+from app.qa.pipeline import answer_question
+from app.qa.session import get_chat_history, summarize_document
 
 
 @asynccontextmanager

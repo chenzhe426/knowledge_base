@@ -135,8 +135,8 @@ class ImportFileRequest(BaseModel):
 
 class IndexRequest(BaseModel):
     document_id: int
-    chunk_size: int = 700
-    overlap: int = 120
+    chunk_size: int = 1200
+    overlap: int = 150
 
 
 class AskRequest(BaseModel):

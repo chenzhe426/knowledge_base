@@ -200,6 +200,7 @@ def _hydrate_candidates(raw_hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
             to_float(cand.get("lexical_db_score")),
             to_float(extra.get("lexical_score")),
         )
+        cand["bm25_score"] = to_float(cand.get("lexical_db_score"))
         results.append(cand)
 
     return results
@@ -260,13 +261,15 @@ def _compute_keyword_components(query_info: dict[str, Any], cand: dict[str, Any]
 def _vector_recall_from_qdrant(
     query_info: dict[str, Any],
     top_k: int,
+    doc_filter: int | None = None,
 ) -> list[dict[str, Any]]:
     from app.services.vector_store import vector_store
     query_text = query_info.get("normalized_query", "")
     if not query_text or top_k <= 0:
         return []
 
-    hits = vector_store.search(query_text, top_k=top_k)
+    search_filters = {"document_id": doc_filter} if doc_filter is not None else None
+    hits = vector_store.search(query_text, top_k=top_k, filters=search_filters)
     if not hits:
         return []
 
@@ -335,7 +338,12 @@ def _keyword_recall_from_candidates(
             + 0.17 * to_float(item.get("section_match_score"))
         )
         item["final_score"] = lexical_score
-        if lexical_score > 0:
+        has_any_lexical = (
+            to_float(item.get("keyword_score")) > 0
+            or to_float(item.get("coverage_score")) > 0
+            or to_float(item.get("lexical_db_score")) > 0
+        )
+        if has_any_lexical:
             results.append(item)
 
     results.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
@@ -459,9 +467,20 @@ def _secondary_financial_recall(
         require_all_terms=False,
     ) or []
 
+    # For ratio queries (quick ratio, current ratio, etc.), also specifically
+    # search for chunks containing "total current liabilities" as these are
+    # critical for ratio calculations but may not match query terms
+    query_lower = query_info.get("normalized_query", "").lower()
+    ratio_hits: list[dict[str, Any]] = []
+    if any(ratio in query_lower for ratio in ["quick ratio", "current ratio", "liquidity"]):
+        ratio_hits = search_chunks_fulltext(
+            "total current liabilities",
+            limit=20,
+        ) or []
+
     seen_ids: set[int] = set()
     merged: list[dict[str, Any]] = []
-    for row in [*financial_hits, *boolean_hits]:
+    for row in [*financial_hits, *boolean_hits, *ratio_hits]:
         chunk_id = safe_get(row, "id")
         if chunk_id is None:
             continue
@@ -476,4 +495,13 @@ def _secondary_financial_recall(
         cand["bm25_score"] = to_float(cand.get("lexical_db_score"))
 
     candidates.sort(key=lambda x: x.get("bm25_score", 0.0), reverse=True)
+
+    # For ratio queries, ensure we return enough candidates to include the ratio_hits
+    # which may have low lexical scores but are critical for ratio calculations
+    query_lower = query_info.get("normalized_query", "").lower()
+    is_ratio_query = any(ratio in query_lower for ratio in ["quick ratio", "current ratio", "liquidity"])
+    if is_ratio_query and ratio_hits:
+        # Return up to 2x to ensure ratio_hits chunks are included
+        return candidates[:top_k * 2]
+
     return candidates[:top_k]

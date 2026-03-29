@@ -34,6 +34,92 @@ def _length_penalty(text: str) -> float:
     return 0.0
 
 
+# Mapping from financial ratio queries to their underlying balance-sheet components.
+# When a query asks about a ratio, chunks containing the raw component data
+# are highly relevant even if they don't mention the ratio term.
+_FINANCIAL_RATIO_COMPONENTS: dict[str, list[str]] = {
+    "quick ratio": [
+        "cash equivalents", "cash and cash equivalents", "short-term investments",
+        "accounts receivable", "receivables", "current liabilities",
+    ],
+    "current ratio": [
+        "current assets", "current liabilities",
+    ],
+    "liquidity": [
+        "current assets", "cash", "cash equivalents", "short-term investments",
+        "accounts receivable", "receivables", "current liabilities",
+    ],
+    "working capital": [
+        "current assets", "current liabilities",
+    ],
+}
+
+# Denominator-only components: chunks with these alone (no numerator) are still critical for ratio queries
+_FINANCIAL_RATIO_DENOMINATOR: dict[str, list[str]] = {
+    "quick ratio": ["current liabilities", "total current liabilities"],
+    "current ratio": ["current liabilities", "total current liabilities"],
+    "liquidity": ["current liabilities", "total current liabilities"],
+    "working capital": ["current liabilities", "total current liabilities"],
+}
+
+
+def _compute_financial_ratio_component_boost(
+    cand: dict[str, Any],
+    query_info: dict[str, Any],
+) -> float:
+    """
+    When query asks about a financial ratio/metric (e.g., "quick ratio"),
+    boost chunks that contain the raw balance-sheet components needed to compute it.
+    This helps table data chunks rank higher for ratio queries.
+    """
+    query_lower = query_info.get("normalized_query", "").lower()
+
+    # Check if query mentions any known financial ratio terms
+    matched_ratio = None
+    for ratio_term in _FINANCIAL_RATIO_COMPONENTS:
+        if ratio_term in query_lower:
+            matched_ratio = ratio_term
+            break
+
+    if not matched_ratio:
+        return 0.0
+
+    # Check if chunk contains the ratio components
+    chunk_text = (cand.get("chunk_text", "") or "").lower()
+    section_path = cand.get("section_path", "") or ""
+    if isinstance(section_path, list):
+        section_path = " ".join(section_path)
+    section = ((cand.get("section_title", "") or "") + " " + section_path).lower()
+    combined = chunk_text + " " + section
+
+    components = _FINANCIAL_RATIO_COMPONENTS[matched_ratio]
+    hit_count = sum(1 for comp in components if comp in combined)
+
+    if hit_count >= 4:
+        return 1.20  # Strong boost for chunks with most/all components
+    elif hit_count >= 3:
+        return 1.00
+    elif hit_count >= 2:
+        return 0.70
+    elif hit_count == 1:
+        # Single hit - check if it's a denominator-only boost
+        # Only boost if chunk has "total current liabilities" specifically AND numeric table characteristics
+        denom_components = _FINANCIAL_RATIO_DENOMINATOR.get(matched_ratio, [])
+        denom_hit = any(comp in combined for comp in denom_components)
+        if denom_hit and "total current liabilities" in combined:
+            # Check if chunk looks like a financial table (has numeric density)
+            chunk_text = (cand.get("chunk_text", "") or "")
+            numeric_lines = sum(1 for line in chunk_text.split("\n")
+                              if line.strip() and any(c.isdigit() for c in line))
+            if numeric_lines >= 3:
+                # Denominator-only chunks (current liabilities) are critical for ratio queries
+                # Give them a VERY significant boost since they're essential for the calculation
+                # but don't match any query terms (no BM25/keyword score)
+                return 2.5
+        return 0.35
+    return 0.0
+
+
 def _metadata_bonus(cand: dict[str, Any]) -> float:
     metadata = cand.get("metadata") or {}
 
@@ -94,8 +180,10 @@ def _compute_table_like_boost(cand: dict[str, Any]) -> float:
     Boost chunks that look like financial table slices.
     """
     text = (cand.get("chunk_text", "") or "").lower()
-    section = ((cand.get("section_title", "") or "") + " " +
-               (cand.get("section_path", "") or "")).lower()
+    section_path = cand.get("section_path", "") or ""
+    if isinstance(section_path, list):
+        section_path = " ".join(section_path)
+    section = ((cand.get("section_title", "") or "") + " " + section_path).lower()
 
     table_title_hits = sum(1 for kw in _TABLE_STRUCTURE_KEYWORDS if kw in section)
     if table_title_hits >= 2:
@@ -127,8 +215,10 @@ def _compute_query_aware_lexical_boost(
     """
     text_lower = ((cand.get("chunk_text", "") or "") + " " +
                   (cand.get("search_text", "") or "")).lower()
-    section_lower = ((cand.get("section_title", "") or "") + " " +
-                     (cand.get("section_path", "") or "")).lower()
+    section_path = cand.get("section_path", "") or ""
+    if isinstance(section_path, list):
+        section_path = " ".join(section_path)
+    section_lower = ((cand.get("section_title", "") or "") + " " + section_path).lower()
     combined = text_lower + " " + section_lower
 
     if intent == "numeric_fact":
@@ -181,8 +271,10 @@ def _compute_anti_noise_penalty(cand: dict[str, Any]) -> float:
     """
     Mildly penalize chunks from noise sections (TOC, risk factors, etc.).
     """
-    section = ((cand.get("section_title", "") or "") + " " +
-               (cand.get("section_path", "") or "")).lower()
+    section_path = cand.get("section_path", "") or ""
+    if isinstance(section_path, list):
+        section_path = " ".join(section_path)
+    section = ((cand.get("section_title", "") or "") + " " + section_path).lower()
 
     for pat in _NOISE_SECTION_PATTERNS:
         if re.search(pat, section):
@@ -263,6 +355,8 @@ def _section_narrative_bonus(cand: dict[str, Any]) -> float:
     section = cand.get("section_title", "") or ""
     section_lower = section.lower()
     path = cand.get("section_path", "") or ""
+    if isinstance(path, list):
+        path = " ".join(path)
     path_lower = path.lower()
     chunk_text = (cand.get("chunk_text", "") or "").lower()
     search_text = (cand.get("search_text", "") or "").lower()

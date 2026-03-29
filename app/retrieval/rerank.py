@@ -11,11 +11,17 @@ from .config import (
     RETRIEVAL_WEIGHT_KEYWORD,
     RETRIEVAL_WEIGHT_SECTION,
     RETRIEVAL_WEIGHT_TITLE,
+    RETRIEVAL_RATIO_EMBEDDING_WEIGHT,
+    RETRIEVAL_RATIO_KEYWORD_WEIGHT,
+    RETRIEVAL_RATIO_BM25_WEIGHT,
+    RETRIEVAL_RATIO_TITLE_WEIGHT,
+    RETRIEVAL_RATIO_SECTION_WEIGHT,
 )
 from .recall import _compute_keyword_components
 from .signals import (
     _compute_anti_noise_penalty,
     _compute_financial_content_bonus,
+    _compute_financial_ratio_component_boost,
     _compute_page_diversity_bonus,
     _compute_query_aware_lexical_boost,
     _compute_numeric_density_boost,
@@ -89,14 +95,35 @@ def _rerank_hybrid_candidates(
 
         coverage_bonus = 0.08 * coverage_score if query_terms else 0.0
 
-        if len(query_terms) <= 2:
+        # For numeric ratio queries (e.g., "quick ratio"), BM25 is less relevant
+        # since the answer depends on balance-sheet component data, not term matching.
+        query_lower = query_info.get("normalized_query", "").lower()
+        is_ratio_query = any(
+            ratio in query_lower for ratio in
+            ["quick ratio", "current ratio", "liquidity", "working capital"]
+        )
+        is_ratio_numeric_query = intent == "numeric_fact" and is_ratio_query
+
+        if is_ratio_numeric_query:
+            # Ratio queries depend on lexical match of balance-sheet components
+            # (current assets, current liabilities, etc.), not semantic similarity.
+            embedding_weight = RETRIEVAL_RATIO_EMBEDDING_WEIGHT
+            keyword_weight = RETRIEVAL_RATIO_KEYWORD_WEIGHT
+            bm25_weight = RETRIEVAL_RATIO_BM25_WEIGHT
+            title_weight = RETRIEVAL_RATIO_TITLE_WEIGHT
+            section_weight = RETRIEVAL_RATIO_SECTION_WEIGHT
+        elif len(query_terms) <= 2:
             embedding_weight = max(0.0, RETRIEVAL_WEIGHT_EMBEDDING - 0.05)
             keyword_weight = RETRIEVAL_WEIGHT_KEYWORD + 0.03
             bm25_weight = RETRIEVAL_WEIGHT_BM25 + 0.02
+            title_weight = RETRIEVAL_WEIGHT_TITLE
+            section_weight = RETRIEVAL_WEIGHT_SECTION
         else:
             embedding_weight = RETRIEVAL_WEIGHT_EMBEDDING
             keyword_weight = RETRIEVAL_WEIGHT_KEYWORD
             bm25_weight = RETRIEVAL_WEIGHT_BM25
+            title_weight = RETRIEVAL_WEIGHT_TITLE
+            section_weight = RETRIEVAL_WEIGHT_SECTION
 
         is_secondary_only = embedding_score == 0 and bm25_score > 0
         secondary_bonus = 0.0
@@ -117,14 +144,15 @@ def _rerank_hybrid_candidates(
         numeric_boost = _compute_numeric_density_boost(cand)
         table_boost = _compute_table_like_boost(cand)
         query_aware_boost = _compute_query_aware_lexical_boost(cand, query_info, intent)
+        ratio_component_boost = _compute_financial_ratio_component_boost(cand, query_info)
         anti_noise_penalty = _compute_anti_noise_penalty(cand)
 
         base_score = (
             embedding_weight * embedding_score
             + keyword_weight * keyword_score
             + bm25_weight * bm25_score
-            + RETRIEVAL_WEIGHT_TITLE * title_score
-            + RETRIEVAL_WEIGHT_SECTION * section_score
+            + title_weight * title_score
+            + section_weight * section_score
             + coverage_bonus
             + _metadata_bonus(cand)
             + _section_narrative_bonus(cand)
@@ -134,6 +162,7 @@ def _rerank_hybrid_candidates(
             + numeric_boost
             + table_boost
             + query_aware_boost
+            + ratio_component_boost
             + anti_noise_penalty
             - _length_penalty(text)
         )

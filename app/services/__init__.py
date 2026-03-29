@@ -6,6 +6,10 @@ from app.services.document_service import (
     list_documents,
     parsed_document_to_db_payload,
 )
+from app.services.indexing_orchestrator import (
+    ingest_document,
+    ingest_folder,
+)
 
 __all__ = [
     "get_document_chunks",
@@ -14,4 +18,6 @@ __all__ = [
     "index_document",
     "list_documents",
     "parsed_document_to_db_payload",
+    "ingest_document",
+    "ingest_folder",
 ]

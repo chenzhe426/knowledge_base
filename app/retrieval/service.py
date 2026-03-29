@@ -3,6 +3,7 @@ Retrieval service: public API (retrieve_chunks) and two-stage pipeline.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from .config import DEFAULT_TOP_K
@@ -13,7 +14,8 @@ def retrieve_chunks(
     top_k: int = DEFAULT_TOP_K,
     enhanced_query: str | None = None,
     use_multistage: bool = False,
-) -> list[dict[str, Any]]:
+    doc_filter: int | None = None,
+) -> dict[str, Any]:
     """
     Two-stage retrieval: fetch large candidate pool → rerank → return top_k.
     """
@@ -44,22 +46,28 @@ def retrieve_chunks(
 
     if use_multistage or RETRIEVAL_USE_MULTISTAGE:
         from .multistage import retrieve_chunks_multistage
-        return retrieve_chunks_multistage(
+        result = retrieve_chunks_multistage(
             query=query,
             top_k=top_k,
             enhanced_query=enhanced_query,
         )
+        # multistage returns list, wrap it
+        return {"chunks": result, "latency_ms": 0.0, "stage_timings": {"multistage": 0.0}}
 
     retrieval_query = enhanced_query if enhanced_query else query
 
+    t0 = time.perf_counter()
+    t_normalize = t0
     query_info = _normalize_query(retrieval_query)
+    t_normalize_end = time.perf_counter()
     if not query_info.get("normalized_query"):
-        return []
+        return {"chunks": [], "latency_ms": 0.0, "stage_timings": {}}
 
     candidate_top_k = max(top_k, 20)
 
     # Parallelize lexical and vector recall (both I/O bound)
     from concurrent.futures import ThreadPoolExecutor
+    t_recall_start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=2) as pool:
         lexical_future = pool.submit(
             _lexical_recall_from_db,
@@ -70,37 +78,61 @@ def retrieve_chunks(
             _vector_recall_from_qdrant,
             query_info,
             max(candidate_top_k, HYBRID_VECTOR_TOP_K),
+            doc_filter,
         )
         lexical_hits = lexical_future.result()
         vector_hits = vector_future.result()
+    t_recall_end = time.perf_counter()
 
     if not lexical_hits and not vector_hits:
-        return []
+        return {
+            "chunks": [],
+            "latency_ms": (time.perf_counter() - t0) * 1000,
+            "stage_timings": {
+                "normalize_query": round((t_normalize_end - t_normalize) * 1000, 2),
+                "parallel_recall": round((t_recall_end - t_recall_start) * 1000, 2),
+            },
+        }
 
     seed_candidates = _merge_recall_candidates(lexical_hits, vector_hits)
 
+    t_keyword = time.perf_counter()
     keyword_hits = _keyword_recall_from_candidates(
         query_info=query_info,
         candidates=seed_candidates,
         top_k=max(candidate_top_k, HYBRID_KEYWORD_TOP_K),
     )
+    t_keyword_end = time.perf_counter()
 
     merged = _merge_recall_candidates(seed_candidates, keyword_hits)
 
+    t_secondary = time.perf_counter()
     secondary_hits = _secondary_financial_recall(
         query_info=query_info,
         top_k=max(candidate_top_k, 60),
     )
+    t_secondary_end = time.perf_counter()
     if secondary_hits:
         merged = _merge_recall_candidates(merged, secondary_hits)
 
+    t_rerank = time.perf_counter()
     reranked = _rerank_hybrid_candidates(merged, query_info=query_info)
+    t_rerank_end = time.perf_counter()
+
+    # Post-filter: restrict to specific document (e.g., company filter from query)
+    # Apply BEFORE deduplication so that deduplication respects per-document limits.
+    if doc_filter is not None:
+        reranked = [c for c in reranked if c.get("document_id") == doc_filter]
+
     primary = _deduplicate_candidates(reranked, top_k=candidate_top_k)
+
+    t_diversity = time.perf_counter()
     expanded = _expand_neighbor_chunks(
         primary,
         target_limit=max(candidate_top_k, len(primary) + 2),
     )
     expanded = _cap_page_duplicates(expanded, top_k=candidate_top_k)
+    t_diversity_end = time.perf_counter()
 
     expanded.sort(key=lambda x: x.get("final_score", 0.0), reverse=True)
     final_hits = expanded[:top_k]
@@ -143,4 +175,16 @@ def retrieve_chunks(
             }
         )
 
-    return results
+    total_ms = (time.perf_counter() - t0) * 1000
+    return {
+        "chunks": results,
+        "latency_ms": round(total_ms, 2),
+        "stage_timings": {
+            "normalize_query": round((t_normalize_end - t_normalize) * 1000, 2),
+            "parallel_recall": round((t_recall_end - t_recall_start) * 1000, 2),
+            "keyword_recall": round((t_keyword_end - t_keyword) * 1000, 2),
+            "secondary_recall": round((t_secondary_end - t_secondary) * 1000, 2),
+            "rerank": round((t_rerank_end - t_rerank) * 1000, 2),
+            "diversity_dedup": round((t_diversity_end - t_diversity) * 1000, 2),
+        },
+    }

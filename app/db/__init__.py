@@ -11,6 +11,7 @@ from app.db.repositories.document_repository import (
 from app.db.repositories.chunk_repository import (
     clear_all_chunks,
     clear_chunks_by_document_id,
+    delete_chunks_by_ids,
     ensure_chunk_search_indexes,
     get_all_chunks,
     get_chunk_by_id,
@@ -45,6 +46,7 @@ __all__ = [
     "delete_document",
     "insert_chunk",
     "insert_chunks_batch",
+    "delete_chunks_by_ids",
     "get_chunk_by_id",
     "get_chunks_by_document_id",
     "get_chunks_by_ids",
